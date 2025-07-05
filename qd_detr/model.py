@@ -12,6 +12,7 @@ from qd_detr.matcher import build_matcher
 from qd_detr.transformer import build_transformer
 from qd_detr.position_encoding import build_position_encoding
 from qd_detr.misc import accuracy
+from qd_detr.umt import UMTFusion
 import numpy as np
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
@@ -25,7 +26,8 @@ class QDDETR(nn.Module):
     def __init__(self, transformer, position_embed, txt_position_embed, txt_dim, vid_dim,
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
-                 max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0):
+                 max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
+                 use_umt=False):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -68,11 +70,17 @@ class QDDETR(nn.Module):
             LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
             LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
         ][:n_input_proj])
-        self.input_vid_proj = nn.Sequential(*[
-            LinearLayer(vid_dim + aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
-            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
-            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
-        ][:n_input_proj])
+
+        self.use_umt = use_umt
+        if use_umt:
+            self.umt_fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
+            self.input_vid_proj = nn.Identity()
+        else:
+            self.input_vid_proj = nn.Sequential(*[
+                LinearLayer(vid_dim + aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+            ][:n_input_proj])
         self.contrastive_align_loss = contrastive_align_loss
         if contrastive_align_loss:
             self.contrastive_align_projection_query = nn.Linear(hidden_dim, contrastive_hdim)
@@ -104,9 +112,13 @@ class QDDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
-        if src_aud is not None:
+        if self.use_umt:
+            if src_aud is None:
+                raise ValueError("Audio features required when use_umt is True")
+            src_vid = self.umt_fusion(src_vid, src_aud, mask=src_vid_mask)
+        elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
-            
+
         src_vid = self.input_vid_proj(src_vid)
         src_txt = self.input_txt_proj(src_txt)
         src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
@@ -538,6 +550,7 @@ def build_model(args):
             span_loss_type=args.span_loss_type,
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
+            use_umt=False,
         )
     else:
         model = QDDETR(
@@ -555,6 +568,7 @@ def build_model(args):
             span_loss_type=args.span_loss_type,
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
+            use_umt=args.use_umt,
         )
 
     matcher = build_matcher(args)
