@@ -1,7 +1,7 @@
 # MR 성능 측정용 스크립트
 # Random baseline의 MR 성능을 측정하기 위해 제작
 # 결과를 터미널에 출력하고 json 파일로 저장
-# QD-DETR-Exp/ 경로에서 `PYTHONPATH=. python supplementary/eval_random_custom.py` 로 실행
+# QD-DETR-Exp/ 경로에서 `PYTHONPATH=. python supplementary/eval_random_baseline.py` 로 실행
 from standalone_eval.eval import eval_submission, load_jsonl
 import os
 
