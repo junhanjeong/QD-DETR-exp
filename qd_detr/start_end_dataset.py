@@ -316,17 +316,13 @@ class StartEndDataset(Dataset):
             v_feat = np.concatenate(v_feat_list, axis=1)
 
         else:
-            v_feat_list = []
-            for _feat_dir in self.v_feat_dirs:
-                _feat_path = join(_feat_dir, f"{vid}.npz")
-                _feat = np.load(_feat_path)["features"][:self.max_v_l].astype(np.float32)
-                if self.normalize_v:
-                    _feat = l2_normalize_np_array(_feat)
-                v_feat_list.append(_feat)
-            # some features are slightly longer than the others
-            min_len = min([len(e) for e in v_feat_list])
-            v_feat_list = [e[:min_len] for e in v_feat_list]
-            v_feat = np.concatenate(v_feat_list, axis=1)
+            # 아래 부분을 audio-only를 위해 수정
+            a_feat_dir = self.v_feat_dirs[0]
+            a_feat_path = join(a_feat_dir, f"{vid}.npy")
+            a_feat = np.load(a_feat_path)[:self.max_v_l].astype(np.float32)
+            if self.normalize_v:
+                a_feat = l2_normalize_np_array(a_feat)
+            v_feat = a_feat
         return torch.from_numpy(v_feat)  # (Lv, D)
 
 
