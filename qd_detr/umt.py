@@ -188,12 +188,12 @@ class UMTFusion(nn.Module):
 
     def __init__(self, vid_dim: int, aud_dim: int, hidden_dim: int):
         super().__init__()
-        self.video_enc = UniModalEncoder(vid_dim, hidden_dim)
-        self.audio_enc = UniModalEncoder(aud_dim, hidden_dim)
+        # self.video_enc = UniModalEncoder(vid_dim, hidden_dim)
+        # self.audio_enc = UniModalEncoder(aud_dim, hidden_dim)
         self.cross_enc = CrossModalEncoder(hidden_dim)
 
     def forward(self, vid, aud, mask=None):
-        v = self.video_enc(vid, mask)
-        a = self.audio_enc(aud, mask)
-        return self.cross_enc(v, a, mask)
+        # v = self.video_enc(vid, mask)
+        # a = self.audio_enc(aud, mask)
+        return self.cross_enc(vid, aud, mask)
 
