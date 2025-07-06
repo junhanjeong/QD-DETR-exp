@@ -4,7 +4,7 @@ v_feat_types=slowfast_clip
 t_feat_type=clip
 a_feat_type=pann
 results_root=results
-exp_id=umt_remove_unimodal_0_5
+exp_id=umt_concat_remove_unimodal
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
