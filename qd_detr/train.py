@@ -1,5 +1,3 @@
-import distutils.version
-
 import os
 import time
 import json
