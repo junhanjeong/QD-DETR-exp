@@ -162,12 +162,13 @@ class CrossModalEncoder(nn.Module):
         assert fusion_type in ('sum', 'mean', 'concat')
         self.fusion_type = fusion_type
         if fusion_type == 'concat':
-            self.mapping = nn.Linear(2 * dims, dims)
+            # self.mapping = nn.Linear(2 * dims, dims)
+            self.mapping = None
         else:
             self.mapping = None
         self.encoder = BottleneckTransformer(dims=dims)
         self.pos_enc = PositionalEncoding(dims)
-        self.norm = nn.LayerNorm(dims)
+        self.norm = nn.LayerNorm(2 * dims) # concat 임시코드
 
     def forward(self, a, b, mask=None):
         pe = self.pos_enc(a)
@@ -178,7 +179,7 @@ class CrossModalEncoder(nn.Module):
             x = (a + b) / 2
         else:
             x = torch.cat([a, b], dim=-1)
-            x = self.mapping(x)
+            # x = self.mapping(x)
         x = self.norm(x)
         return x
 
