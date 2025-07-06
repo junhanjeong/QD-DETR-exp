@@ -13,6 +13,7 @@ from qd_detr.transformer import build_transformer
 from qd_detr.position_encoding import build_position_encoding
 from qd_detr.misc import accuracy
 from qd_detr.umt import UMTFusion
+from qd_detr.avigate import AVIGATEFusion
 import numpy as np
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
@@ -27,7 +28,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_umt=False):
+                 use_umt=False, use_avigate=False):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -72,8 +73,13 @@ class QDDETR(nn.Module):
         ][:n_input_proj])
 
         self.use_umt = use_umt
+        self.use_avigate = use_avigate
+
         if use_umt:
-            self.umt_fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
+            self.fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
+            self.input_vid_proj = nn.Identity()
+        elif use_avigate:
+            self.fusion = AVIGATEFusion(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1)
             self.input_vid_proj = nn.Identity()
         else:
             self.input_vid_proj = nn.Sequential(*[
@@ -115,7 +121,11 @@ class QDDETR(nn.Module):
         if self.use_umt:
             if src_aud is None:
                 raise ValueError("Audio features required when use_umt is True")
-            src_vid = self.umt_fusion(src_vid, src_aud, mask=src_vid_mask)
+            src_vid = self.fusion(src_vid, src_aud, mask=src_vid_mask)
+        elif self.use_avigate:
+            if src_aud is None:
+                raise ValueError("Audio features required when use_avigate is True")
+            src_vid = self.fusion(src_vid, src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
         elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
 
@@ -551,6 +561,7 @@ def build_model(args):
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
             use_umt=False,
+            use_avigate=False,
         )
     else:
         model = QDDETR(
@@ -569,6 +580,7 @@ def build_model(args):
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
             use_umt=args.use_umt,
+            use_avigate=args.use_avigate,
         )
 
     matcher = build_matcher(args)
