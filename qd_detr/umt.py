@@ -157,7 +157,7 @@ class UniModalEncoder(nn.Module):
 class CrossModalEncoder(nn.Module):
     """Fuse two modalities"""
 
-    def __init__(self, dims: int, fusion_type: str = 'sum'):
+    def __init__(self, dims: int, fusion_type: str = 'concat'):
         super().__init__()
         assert fusion_type in ('sum', 'mean', 'concat')
         self.fusion_type = fusion_type

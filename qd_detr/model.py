@@ -75,7 +75,7 @@ class QDDETR(nn.Module):
         if use_umt:
             self.umt_fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
             self.input_vid_proj = nn.Sequential(*[
-                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=0.1, relu=relu_args[0]),
+                LinearLayer(2 * hidden_dim, hidden_dim, layer_norm=True, dropout=0.1, relu=relu_args[0]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=0.1, relu=relu_args[1]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=0.1, relu=relu_args[2])
             ][:n_input_proj])
