@@ -136,20 +136,20 @@ class UniModalEncoder(nn.Module):
         super().__init__()
         self.mapping = nn.Linear(in_dim, hidden_dim)
         self.dropout = nn.Dropout(dropout)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=8, dim_feedforward=hidden_dim * 4, dropout=0.1, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
-        self.pos_enc = PositionalEncoding(hidden_dim)
+        # encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=8, dim_feedforward=hidden_dim * 4, dropout=0.1, batch_first=True)
+        # self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        # self.pos_enc = PositionalEncoding(hidden_dim)
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, x, mask=None):
         x = self.dropout(x)
         x = self.mapping(x)
-        pe = self.pos_enc(x)
-        x = x + pe
-        key_padding_mask = None
-        if mask is not None:
-            key_padding_mask = mask == 0
-        x = self.encoder(x, src_key_padding_mask=key_padding_mask)
+        # pe = self.pos_enc(x)
+        # x = x + pe
+        # key_padding_mask = None
+        # if mask is not None:
+        #     key_padding_mask = mask == 0
+        # x = self.encoder(x, src_key_padding_mask=key_padding_mask)
         x = self.norm(x)
         return x
 
@@ -188,12 +188,12 @@ class UMTFusion(nn.Module):
 
     def __init__(self, vid_dim: int, aud_dim: int, hidden_dim: int):
         super().__init__()
-        # self.video_enc = UniModalEncoder(vid_dim, hidden_dim)
-        # self.audio_enc = UniModalEncoder(aud_dim, hidden_dim)
+        self.video_enc = UniModalEncoder(vid_dim, hidden_dim)
+        self.audio_enc = UniModalEncoder(aud_dim, hidden_dim)
         self.cross_enc = CrossModalEncoder(hidden_dim)
 
     def forward(self, vid, aud, mask=None):
-        # v = self.video_enc(vid, mask)
-        # a = self.audio_enc(aud, mask)
-        return self.cross_enc(vid, aud, mask)
+        v = self.video_enc(vid, mask)
+        a = self.audio_enc(aud, mask)
+        return self.cross_enc(v, a, mask)
 
