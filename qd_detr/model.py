@@ -549,6 +549,8 @@ class SetCriterion(nn.Module):
                 for loss in losses_target:
                     if "saliency" == loss:  # skip as it is only in the top layer
                         continue
+                    if "alignment" == loss:  # skip alignment loss for aux outputs
+                        continue
                     kwargs = {}
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
