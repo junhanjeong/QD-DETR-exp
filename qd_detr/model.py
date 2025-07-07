@@ -580,6 +580,7 @@ def build_model(args):
             n_input_proj=args.n_input_proj,
             use_umt=False,
             use_avigate=False,
+            use_custom_audio_fusion=False,
         )
     else:
         model = QDDETR(
@@ -599,6 +600,7 @@ def build_model(args):
             n_input_proj=args.n_input_proj,
             use_umt=args.use_umt,
             use_avigate=args.use_avigate,
+            use_custom_audio_fusion=args.use_custom_audio_fusion,
         )
 
     matcher = build_matcher(args)
