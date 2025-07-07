@@ -4,7 +4,7 @@ v_feat_types=slowfast_clip
 t_feat_type=clip
 a_feat_type=pann
 results_root=results
-exp_id=custom_audio_fusion
+exp_id=custom_audio_fusion_align_loss
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
