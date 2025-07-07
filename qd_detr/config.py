@@ -126,9 +126,9 @@ class BaseOptions(object):
                             help="Disable contrastive_align_loss between matched query spans and the text.")
         parser.add_argument("--use_alignment_loss", action="store_true",
                             help="Use audio-text alignment loss.")
-        parser.add_argument("--local_align_loss_coef", default=1.0, type=float,
+        parser.add_argument("--local_align_loss_coef", default=0.3, type=float,
                             help="Weight for the local alignment loss.")
-        parser.add_argument("--global_align_loss_coef", default=1.0, type=float,
+        parser.add_argument("--global_align_loss_coef", default=0.3, type=float,
                             help="Weight for the global alignment loss.")
         # * Matcher
         parser.add_argument('--set_cost_span', default=10, type=float,

@@ -64,6 +64,6 @@ PYTHONPATH=$PYTHONPATH:. python qd_detr/train.py \
 --exp_id ${exp_id} \
 --use_custom_audio_fusion \
 --use_alignment_loss \
---local_align_loss_coef 1.0 \
---global_align_loss_coef 1.0 \
+--local_align_loss_coef 0.3 \
+--global_align_loss_coef 0.3 \
 "${@:1}"
