@@ -104,6 +104,7 @@ class BaseOptions(object):
         parser.add_argument("--use_txt_pos", action="store_true", help="use position_embedding for text as well.")
         parser.add_argument("--use_umt", action="store_true", help="use UMT fusion for video and audio")
         parser.add_argument("--use_avigate", action="store_true", help="use AVIGATE fusion for video and audio")
+        parser.add_argument("--use_custom_audio_fusion", action="store_true", help="use custom audio fusion for video and audio")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,

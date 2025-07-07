@@ -14,6 +14,7 @@ from qd_detr.position_encoding import build_position_encoding
 from qd_detr.misc import accuracy
 from qd_detr.umt import UMTFusion
 from qd_detr.avigate import AVIGATEFusion
+from qd_detr.custom_audio_fusion import CustomAudioFusion
 import numpy as np
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
@@ -28,7 +29,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_umt=False, use_avigate=False):
+                 use_umt=False, use_avigate=False, use_custom_audio_fusion=False):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -74,6 +75,7 @@ class QDDETR(nn.Module):
 
         self.use_umt = use_umt
         self.use_avigate = use_avigate
+        self.use_custom_audio_fusion = use_custom_audio_fusion
 
         if use_umt:
             self.fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
@@ -81,6 +83,15 @@ class QDDETR(nn.Module):
         elif use_avigate:
             self.fusion = AVIGATEFusion(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1)
             self.input_vid_proj = nn.Identity()
+        elif use_custom_audio_fusion:
+            # Custom Audio Fusion을 위한 초기화
+            self.input_aud_proj = nn.Linear(aud_dim, hidden_dim)
+            self.audio_fusion_module = CustomAudioFusion(hidden_dim, n_heads=transformer.nhead)
+            self.input_vid_proj = nn.Sequential(*[
+                LinearLayer(vid_dim + hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+            ][:n_input_proj])
         else:
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim + aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
@@ -126,11 +137,18 @@ class QDDETR(nn.Module):
             if src_aud is None:
                 raise ValueError("Audio features required when use_avigate is True")
             src_vid = self.fusion(src_vid, src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
+        elif self.use_custom_audio_fusion:
+            if src_aud is None:
+                raise ValueError("Audio features required when use_custom_audio_fusion is True")
+            proj_txt = self.input_txt_proj(src_txt)
+            proj_aud = self.input_aud_proj(src_aud)
+            refined_audio_feature = self.audio_fusion_module(proj_aud, proj_txt, src_aud_mask, src_txt_mask)
+            src_vid = torch.cat([src_vid, refined_audio_feature], dim=2)
         elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
 
         src_vid = self.input_vid_proj(src_vid)
-        src_txt = self.input_txt_proj(src_txt)
+        src_txt = self.input_txt_proj(src_txt) if self.use_custom_audio_fusion == False else proj_txt
         src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
         mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()  # (bsz, L_vid+L_txt)
         # TODO should we remove or use different positional embeddings to the src_txt?
