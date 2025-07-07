@@ -49,6 +49,11 @@ class AlignmentLoss(nn.Module):
         logits = torch.mm(g_audio, g_text.t()) / self.temperature
         labels = torch.arange(logits.size(0), device=logits.device)
 
-        loss_global = F.cross_entropy(logits, labels)
+        # Calculate cross-entropy loss in both directions
+        loss_audio_to_text = F.cross_entropy(logits, labels)
+        loss_text_to_audio = F.cross_entropy(logits.t(), labels)
+
+        # Average the two losses
+        loss_global = (loss_audio_to_text + loss_text_to_audio) / 2.0
 
         return loss_local, loss_global
