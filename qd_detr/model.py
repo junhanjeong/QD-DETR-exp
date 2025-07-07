@@ -15,6 +15,7 @@ from qd_detr.misc import accuracy
 from qd_detr.umt import UMTFusion
 from qd_detr.avigate import AVIGATEFusion
 from qd_detr.custom_audio_fusion import CustomAudioFusion
+from qd_detr.alignment_loss import AlignmentLoss
 import numpy as np
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
@@ -29,7 +30,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_umt=False, use_avigate=False, use_custom_audio_fusion=False):
+                 use_umt=False, use_avigate=False, use_custom_audio_fusion=False, use_alignment_loss=False):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -72,6 +73,11 @@ class QDDETR(nn.Module):
             LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
             LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
         ][:n_input_proj])
+
+        self.use_alignment_loss = use_alignment_loss
+        if self.use_alignment_loss:
+            self.alignment_vid_proj = MLP(vid_dim + aud_dim, hidden_dim, hidden_dim, 3)
+            self.alignment_txt_proj = MLP(txt_dim, hidden_dim, hidden_dim, 3)
 
         self.use_umt = use_umt
         self.use_avigate = use_avigate
@@ -129,6 +135,14 @@ class QDDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
+        raw_audio_feat = torch.cat([src_vid, src_aud], dim=2) if src_aud is not None else src_vid
+        raw_text_feat = src_txt
+
+        if self.use_alignment_loss:
+            # Project features for alignment loss
+            projected_audio_feat = self.alignment_vid_proj(raw_audio_feat)
+            projected_text_feat = self.alignment_txt_proj(raw_text_feat)
+
         if self.use_umt:
             if src_aud is None:
                 raise ValueError("Audio features required when use_umt is True")
@@ -189,7 +203,10 @@ class QDDETR(nn.Module):
                 proj_txt_mem=proj_txt_mem,
                 proj_vid_mem=proj_vid_mem
             ))
-            
+        
+        if self.use_alignment_loss:
+            out['projected_audio_feat'] = projected_audio_feat
+            out['projected_text_feat'] = projected_text_feat
             
         # !!! this is code for test
         if src_txt.shape[1] == 0:
@@ -243,7 +260,7 @@ class SetCriterion(nn.Module):
     """
 
     def __init__(self, matcher, weight_dict, eos_coef, losses, temperature, span_loss_type, max_v_l,
-                 saliency_margin=1, use_matcher=True):
+                 saliency_margin=1, use_matcher=True, use_alignment_loss=False):
         """ Create the criterion.
         Parameters:
             matcher: module able to compute a matching between targets and proposals
@@ -274,6 +291,10 @@ class SetCriterion(nn.Module):
         
         # for tvsum,
         self.use_matcher = use_matcher
+
+        self.use_alignment_loss = use_alignment_loss
+        if self.use_alignment_loss:
+            self.alignment_loss = AlignmentLoss(temperature=self.temperature)
 
     def loss_spans(self, outputs, targets, indices):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
@@ -451,6 +472,24 @@ class SetCriterion(nn.Module):
         batch_idx = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
+    
+    def loss_alignment(self, outputs, targets, indices, log=True):
+        """Computes the audio-text alignment loss."""
+        audio_feat = outputs['projected_audio_feat']
+        text_feat = outputs['projected_text_feat']
+
+        # Ground truth 마스크 생성
+        # 'saliency_all_labels'를 사용하여 각 clip의 관련성 여부(C^i)를 판단합니다.
+        # 점수가 0보다 크면 관련 있는 클립으로 간주하여 1로 설정합니다.
+        relevant_clips_mask = (targets['saliency_all_labels'] > 0).float()
+        
+        loss_local, loss_global = self.alignment_loss(audio_feat, text_feat, relevant_clips_mask)
+        
+        losses = {
+            'loss_local_align': loss_local,
+            'loss_global_align': loss_global
+        }
+        return losses
 
     def get_loss(self, loss, outputs, targets, indices, **kwargs):
         loss_map = {
@@ -458,6 +497,7 @@ class SetCriterion(nn.Module):
             "labels": self.loss_labels,
             "contrastive_align": self.loss_contrastive_align,
             "saliency": self.loss_saliency,
+            "alignment": self.loss_alignment,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, **kwargs)
@@ -581,6 +621,7 @@ def build_model(args):
             use_umt=False,
             use_avigate=False,
             use_custom_audio_fusion=False,
+            use_alignment_loss=args.use_alignment_loss,
         )
     else:
         model = QDDETR(
@@ -601,6 +642,7 @@ def build_model(args):
             use_umt=args.use_umt,
             use_avigate=args.use_avigate,
             use_custom_audio_fusion=args.use_custom_audio_fusion,
+            use_alignment_loss=args.use_alignment_loss,
         )
 
     matcher = build_matcher(args)
@@ -610,6 +652,9 @@ def build_model(args):
                    "loss_saliency": args.lw_saliency}
     if args.contrastive_align_loss:
         weight_dict["loss_contrastive_align"] = args.contrastive_align_loss_coef
+    if args.use_alignment_loss:
+        weight_dict["loss_local_align"] = args.local_align_loss_coef
+        weight_dict["loss_global_align"] = args.global_align_loss_coef
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -620,6 +665,8 @@ def build_model(args):
     losses = ['spans', 'labels', 'saliency']
     if args.contrastive_align_loss:
         losses += ["contrastive_align"]
+    if args.use_alignment_loss:
+        losses += ["alignment"]
         
     # For tvsum dataset
     use_matcher = not (args.dset_name == 'tvsum')
@@ -629,6 +676,7 @@ def build_model(args):
         eos_coef=args.eos_coef, temperature=args.temperature,
         span_loss_type=args.span_loss_type, max_v_l=args.max_v_l,
         saliency_margin=args.saliency_margin, use_matcher=use_matcher,
+        use_alignment_loss=args.use_alignment_loss,
     )
     criterion.to(device)
     return model, criterion
