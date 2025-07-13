@@ -15,7 +15,9 @@ from qd_detr.misc import accuracy
 from qd_detr.umt import UMTFusion
 from qd_detr.avigate import AVIGATEFusion
 from qd_detr.custom_audio_fusion import CustomAudioFusion
+from qd_detr.temporal_gate import TemporalGateFusion
 import numpy as np
+
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
     x1 = x.clamp(min=eps)
@@ -29,7 +31,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_umt=False, use_avigate=False, use_custom_audio_fusion=False):
+                 use_umt=False, use_avigate=False, use_custom_audio_fusion=False, use_temporal_gate=False):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -76,6 +78,7 @@ class QDDETR(nn.Module):
         self.use_umt = use_umt
         self.use_avigate = use_avigate
         self.use_custom_audio_fusion = use_custom_audio_fusion
+        self.use_temporal_gate = use_temporal_gate
 
         if use_umt:
             self.fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
@@ -84,20 +87,23 @@ class QDDETR(nn.Module):
             self.fusion = AVIGATEFusion(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1)
             self.input_vid_proj = nn.Identity()
         elif use_custom_audio_fusion:
-            # Custom Audio Fusion을 위한 초기화
             self.input_aud_proj = nn.Linear(aud_dim, hidden_dim)
             self.audio_fusion_module = CustomAudioFusion(hidden_dim, n_heads=transformer.nhead)
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim + hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
-                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
-                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+                # ...
             ][:n_input_proj])
+        elif use_temporal_gate:  # New block
+            self.fusion = TemporalGateFusion(vid_dim, aud_dim, hidden_dim)
+            self.input_vid_proj = nn.Identity()
+            # Text projection is handled inside the forward pass for the gate
         else:
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim + aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
             ][:n_input_proj])
+        
         self.contrastive_align_loss = contrastive_align_loss
         if contrastive_align_loss:
             self.contrastive_align_projection_query = nn.Linear(hidden_dim, contrastive_hdim)
@@ -129,38 +135,37 @@ class QDDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
+        alpha = None  # Initialize alpha for potential loss calculation
         if self.use_umt:
-            if src_aud is None:
-                raise ValueError("Audio features required when use_umt is True")
+            if src_aud is None: raise ValueError("Audio features required for UMT")
             src_vid = self.fusion(src_vid, src_aud, mask=src_vid_mask)
         elif self.use_avigate:
-            if src_aud is None:
-                raise ValueError("Audio features required when use_avigate is True")
+            if src_aud is None: raise ValueError("Audio features required for AVIGATE")
             src_vid = self.fusion(src_vid, src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
         elif self.use_custom_audio_fusion:
-            if src_aud is None:
-                raise ValueError("Audio features required when use_custom_audio_fusion is True")
+            if src_aud is None: raise ValueError("Audio features required for Custom Fusion")
             proj_txt = self.input_txt_proj(src_txt)
             proj_aud = self.input_aud_proj(src_aud)
             refined_audio_feature = self.audio_fusion_module(proj_aud, proj_txt, src_aud_mask, src_txt_mask)
             src_vid = torch.cat([src_vid, refined_audio_feature], dim=2)
+        elif self.use_temporal_gate:
+            if src_aud is None: raise ValueError("Audio features required for Temporal Gate")
+            proj_txt = self.input_txt_proj(src_txt)
+            text_feat_pooled = proj_txt.mean(dim=1)
+            src_vid, alpha = self.fusion(src_vid, src_aud, text_feat_pooled)
         elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
 
         src_vid = self.input_vid_proj(src_vid)
-        src_txt = self.input_txt_proj(src_txt) if self.use_custom_audio_fusion == False else proj_txt
-        src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
-        mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()  # (bsz, L_vid+L_txt)
-        # TODO should we remove or use different positional embeddings to the src_txt?
-        pos_vid = self.position_embed(src_vid, src_vid_mask)  # (bsz, L_vid, d)
-        pos_txt = self.txt_position_embed(src_txt) if self.use_txt_pos else torch.zeros_like(src_txt)  # (bsz, L_txt, d)
-        # pos_txt = torch.zeros_like(src_txt)
-        # pad zeros for txt positions
+        src_txt = self.input_txt_proj(src_txt) if not self.use_temporal_gate else proj_txt
+        src = torch.cat([src_vid, src_txt], dim=1)
+        mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()
+        
+        pos_vid = self.position_embed(src_vid, src_vid_mask)
+        pos_txt = self.txt_position_embed(src_txt) if self.use_txt_pos else torch.zeros_like(src_txt)
         pos = torch.cat([pos_vid, pos_txt], dim=1)
-        # (#layers, bsz, #queries, d), (bsz, L_vid+L_txt, d)
 
-        # for global token
-        mask_ = torch.tensor([[True]]).to(mask.device).repeat(mask.shape[0], 1)
+        mask_ = torch.tensor([[True]], device=mask.device).repeat(mask.shape[0], 1)
         mask = torch.cat([mask_, mask], dim=1)
         src_ = self.global_rep_token.reshape([1, 1, self.hidden_dim]).repeat(src.shape[0], 1, 1)
         src = torch.cat([src_, src], dim=1)
@@ -170,13 +175,16 @@ class QDDETR(nn.Module):
         video_length = src_vid.shape[1]
         
         hs, reference, memory, memory_global = self.transformer(src, ~mask, self.query_embed.weight, pos, video_length=video_length)
-        outputs_class = self.class_embed(hs)  # (#layers, batch_size, #queries, #classes)
+        outputs_class = self.class_embed(hs)
         reference_before_sigmoid = inverse_sigmoid(reference)
         tmp = self.span_embed(hs)
         outputs_coord = tmp + reference_before_sigmoid
         if self.span_loss_type == "l1":
             outputs_coord = outputs_coord.sigmoid()
         out = {'pred_logits': outputs_class[-1], 'pred_spans': outputs_coord[-1]}
+
+        if alpha is not None:
+            out["alpha"] = alpha
 
         txt_mem = memory[:, src_vid.shape[1]:]  # (bsz, L_txt, d)
         vid_mem = memory[:, :src_vid.shape[1]]  # (bsz, L_vid, d)
@@ -400,6 +408,16 @@ class SetCriterion(nn.Module):
         # loss_saliency = loss_rank_contrastive
         return {"loss_saliency": loss_saliency}
 
+    def loss_gate_sparsity(self, outputs, targets, indices, log=True):
+        """ Encourages the gate to be sparse. """
+        if "alpha" not in outputs:
+            return {"loss_gate_sparsity": torch.tensor(0.0, device=outputs["pred_logits"].device)}
+        
+        alpha = outputs["alpha"]
+        # The weight is applied in the main loss calculation
+        loss = alpha.mean() 
+        return {"loss_gate_sparsity": loss}
+
     def loss_contrastive_align(self, outputs, targets, indices, log=True):
         """encourage higher scores between matched query span and input text"""
         normalized_text_embed = outputs["proj_txt_mem"]  # (bsz, #tokens, d)  text tokens
@@ -458,6 +476,7 @@ class SetCriterion(nn.Module):
             "labels": self.loss_labels,
             "contrastive_align": self.loss_contrastive_align,
             "saliency": self.loss_saliency,
+            'gate_sparsity': self.loss_gate_sparsity,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, **kwargs)
@@ -500,7 +519,7 @@ class SetCriterion(nn.Module):
                     losses_target = ["saliency"]    
                 # for loss in self.losses:
                 for loss in losses_target:
-                    if "saliency" == loss:  # skip as it is only in the top layer
+                    if "saliency" == loss or "gate_sparsity" == loss:  # skip as it is only in the top layer
                         continue
                     kwargs = {}
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, **kwargs)
@@ -581,6 +600,7 @@ def build_model(args):
             use_umt=False,
             use_avigate=False,
             use_custom_audio_fusion=False,
+            use_temporal_gate=False,
         )
     else:
         model = QDDETR(
@@ -601,6 +621,7 @@ def build_model(args):
             use_umt=args.use_umt,
             use_avigate=args.use_avigate,
             use_custom_audio_fusion=args.use_custom_audio_fusion,
+            use_temporal_gate=args.use_temporal_gate,
         )
 
     matcher = build_matcher(args)
@@ -610,16 +631,20 @@ def build_model(args):
                    "loss_saliency": args.lw_saliency}
     if args.contrastive_align_loss:
         weight_dict["loss_contrastive_align"] = args.contrastive_align_loss_coef
+    if args.use_temporal_gate:
+        weight_dict["loss_gate_sparsity"] = args.sparsity_loss_coef
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
         for i in range(args.dec_layers - 1):
-            aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items() if k != "loss_saliency"})
+            aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items() if k not in ["loss_saliency", "loss_gate_sparsity"]})
         weight_dict.update(aux_weight_dict)
 
     losses = ['spans', 'labels', 'saliency']
     if args.contrastive_align_loss:
         losses += ["contrastive_align"]
+    if args.use_temporal_gate:
+        losses += ["gate_sparsity"]
         
     # For tvsum dataset
     use_matcher = not (args.dset_name == 'tvsum')

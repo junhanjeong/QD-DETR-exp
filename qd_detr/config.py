@@ -105,6 +105,7 @@ class BaseOptions(object):
         parser.add_argument("--use_umt", action="store_true", help="use UMT fusion for video and audio")
         parser.add_argument("--use_avigate", action="store_true", help="use AVIGATE fusion for video and audio")
         parser.add_argument("--use_custom_audio_fusion", action="store_true", help="use custom audio fusion for video and audio")
+        parser.add_argument("--use_temporal_gate", action="store_true", help="use temporal gate fusion for video and audio")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,
@@ -139,6 +140,7 @@ class BaseOptions(object):
         parser.add_argument('--eos_coef', default=0.1, type=float,
                             help="Relative classification weight of the no-object class")
         parser.add_argument("--contrastive_align_loss_coef", default=0.0, type=float)
+        parser.add_argument("--sparsity_loss_coef", default=0.1, type=float)
 
         parser.add_argument("--no_sort_results", action="store_true",
                             help="do not sort results, use this for moment query visualization")
