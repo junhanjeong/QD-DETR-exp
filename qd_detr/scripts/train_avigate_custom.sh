@@ -7,7 +7,9 @@ results_root=results
 gating_type=clipwise # 'global' or 'clipwise' or 'elementwise'
 input_dropout=0.5
 seed=2018
-exp_id=avigate_custom_${gating_type}_${input_dropout}_${seed}
+fusion_layers=4
+fusion_n_heads=8
+exp_id=avigate_custom_${gating_type}_${input_dropout}_${seed}_l${fusion_layers}_h${fusion_n_heads}
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
@@ -69,4 +71,6 @@ PYTHONPATH=$PYTHONPATH:. python qd_detr/train.py \
 --gating_type ${gating_type} \
 --input_dropout ${input_dropout} \
 --seed ${seed} \
+--fusion_layers ${fusion_layers} \
+--fusion_n_heads ${fusion_n_heads} \
 "${@:1}"

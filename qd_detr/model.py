@@ -27,7 +27,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_avigate_custom=False, gating_type='global', fusion_layers=4):
+                 use_avigate_custom=False, gating_type='global', fusion_layers=4, fusion_n_heads=8):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -75,7 +75,7 @@ class QDDETR(nn.Module):
         self.use_avigate_custom = use_avigate_custom
 
         if use_avigate_custom:
-            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=fusion_layers, gating_type=gating_type)
+            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=fusion_n_heads, num_layers=fusion_layers, gating_type=gating_type)
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
@@ -584,6 +584,7 @@ def build_model(args):
             use_avigate_custom=args.use_avigate_custom,
             gating_type=args.gating_type,
             fusion_layers=args.fusion_layers,
+            fusion_n_heads=args.fusion_n_heads,
         )
 
     matcher = build_matcher(args)
