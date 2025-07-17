@@ -6,7 +6,8 @@ a_feat_type=pann
 results_root=results
 gating_type=clipwise # 'global' or 'clipwise' or 'elementwise'
 input_dropout=0.5
-exp_id=avigate_custom_${gating_type}_${input_dropout}
+seed=2018
+exp_id=avigate_custom_${gating_type}_${input_dropout}_${seed}
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
@@ -67,4 +68,5 @@ PYTHONPATH=$PYTHONPATH:. python qd_detr/train.py \
 --use_avigate_custom \
 --gating_type ${gating_type} \
 --input_dropout ${input_dropout} \
+--seed ${seed} \
 "${@:1}"
