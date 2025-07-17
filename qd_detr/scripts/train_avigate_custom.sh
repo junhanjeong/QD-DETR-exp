@@ -4,7 +4,9 @@ v_feat_types=slowfast_clip
 t_feat_type=clip
 a_feat_type=pann
 results_root=results
-exp_id=umt
+gating_type=clipwise # 'global' or 'clipwise' or 'elementwise'
+input_dropout=0.5
+exp_id=avigate_custom_${gating_type}_${input_dropout}
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
@@ -62,5 +64,7 @@ PYTHONPATH=$PYTHONPATH:. python qd_detr/train.py \
 --bsz ${bsz} \
 --results_root ${results_root} \
 --exp_id ${exp_id} \
---use_umt \
+--use_avigate_custom \
+--gating_type ${gating_type} \
+--input_dropout ${input_dropout} \
 "${@:1}"

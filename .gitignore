@@ -2,6 +2,10 @@
 __pycache__/
 */__pycache__/
 
+# Jupyter Notebook 체크포인트 무시
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
 # results 폴더 내 모든 파일 및 서브폴더 무시
 results/*
 data/*

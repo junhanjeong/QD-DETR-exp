@@ -12,8 +12,7 @@ from qd_detr.matcher import build_matcher
 from qd_detr.transformer import build_transformer
 from qd_detr.position_encoding import build_position_encoding
 from qd_detr.misc import accuracy
-from qd_detr.umt import UMTFusion
-from qd_detr.avigate import AVIGATEFusion
+from qd_detr.avigate_custom import AVIGATEFusionCustom
 import numpy as np
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
@@ -28,7 +27,7 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_umt=False, use_avigate=False):
+                 use_avigate_custom=False, gating_type='global'):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -72,15 +71,21 @@ class QDDETR(nn.Module):
             LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
         ][:n_input_proj])
 
-        self.use_umt = use_umt
-        self.use_avigate = use_avigate
+        
+        self.use_avigate_custom = use_avigate_custom
 
-        if use_umt:
-            self.fusion = UMTFusion(vid_dim, aud_dim, hidden_dim)
-            self.input_vid_proj = nn.Identity()
-        elif use_avigate:
-            self.fusion = AVIGATEFusion(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1)
-            self.input_vid_proj = nn.Identity()
+        if use_avigate_custom:
+            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1, gating_type=gating_type)
+            self.input_vid_proj = nn.Sequential(*[
+                LinearLayer(vid_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+            ][:n_input_proj])
+            self.input_aud_proj = nn.Sequential(*[
+                LinearLayer(aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+                LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+            ][:n_input_proj])
         else:
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim + aud_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
@@ -118,18 +123,17 @@ class QDDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
-        if self.use_umt:
+        if self.use_avigate_custom:
             if src_aud is None:
-                raise ValueError("Audio features required when use_umt is True")
-            src_vid = self.fusion(src_vid, src_aud, mask=src_vid_mask)
-        elif self.use_avigate:
-            if src_aud is None:
-                raise ValueError("Audio features required when use_avigate is True")
-            src_vid = self.fusion(src_vid, src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
+                raise ValueError("Audio features required when use_avigate_custom is True")
+            src_vid = self.input_vid_proj(src_vid)
+            src_aud = self.input_aud_proj(src_aud)
+            src_vid = self.fusion(video_feat=src_vid, audio_feat=src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
+        
         elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
+            src_vid = self.input_vid_proj(src_vid)
 
-        src_vid = self.input_vid_proj(src_vid)
         src_txt = self.input_txt_proj(src_txt)
         src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
         mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()  # (bsz, L_vid+L_txt)
@@ -560,8 +564,6 @@ def build_model(args):
             span_loss_type=args.span_loss_type,
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
-            use_umt=False,
-            use_avigate=False,
         )
     else:
         model = QDDETR(
@@ -579,8 +581,8 @@ def build_model(args):
             span_loss_type=args.span_loss_type,
             use_txt_pos=args.use_txt_pos,
             n_input_proj=args.n_input_proj,
-            use_umt=args.use_umt,
-            use_avigate=args.use_avigate,
+            use_avigate_custom=args.use_avigate_custom,
+            gating_type=args.gating_type,
         )
 
     matcher = build_matcher(args)

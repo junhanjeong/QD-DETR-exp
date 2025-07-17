@@ -102,8 +102,8 @@ class BaseOptions(object):
         parser.add_argument("--txt_drop_ratio", default=0, type=float,
                             help="drop txt_drop_ratio tokens from text input. 0.1=10%")
         parser.add_argument("--use_txt_pos", action="store_true", help="use position_embedding for text as well.")
-        parser.add_argument("--use_umt", action="store_true", help="use UMT fusion for video and audio")
-        parser.add_argument("--use_avigate", action="store_true", help="use AVIGATE fusion for video and audio")
+        parser.add_argument("--use_avigate_custom", action="store_true", help="use AVIGATE custom fusion for video and audio")
+        parser.add_argument("--gating_type", type=str, default="global", choices=["global", "clipwise", "elementwise"], help="gating type for avigate_custom")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,
