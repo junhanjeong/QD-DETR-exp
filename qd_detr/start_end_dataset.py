@@ -30,7 +30,7 @@ class StartEndDataset(Dataset):
                  max_q_l=32, max_v_l=75, data_ratio=1.0, ctx_mode="video",
                  normalize_v=True, normalize_t=True, load_labels=True,
                  clip_len=2, max_windows=5, span_loss_type="l1", txt_drop_ratio=0,
-                 dset_domain=None):
+                 dset_domain=None, preload_to_gpu=False, device=None):
         self.dset_name = dset_name
         self.data_path = data_path
         self.data_ratio = data_ratio
@@ -53,11 +53,20 @@ class StartEndDataset(Dataset):
         if "val" in data_path or "test" in data_path:
             assert txt_drop_ratio == 0
 
+        self.preload_to_gpu = preload_to_gpu
+        self.device = device
+        if self.preload_to_gpu and self.device is None:
+            raise ValueError("A device must be provided when preloading data to GPU.")
+
         # checks
         assert q_feat_type in self.Q_FEAT_TYPES
 
         # data
         self.data = self.load_data()
+
+        # Preload data to GPU if specified
+        if self.preload_to_gpu:
+            self._preload_data()
         
         # load specific domain data for tvsum dataset
         if self.dset_name == 'tvsum':
@@ -80,10 +89,38 @@ class StartEndDataset(Dataset):
                         .format(self.data_ratio * 100, n_examples))
         return datalist
 
+    def _preload_data(self):
+        """Preload all features and labels into a list of dictionaries on the specified device."""
+        logger.info(f"Preloading data to {self.device}...")
+        self.processed_data = []
+        for index in tqdm(range(len(self.data)), desc="Preloading data"):
+            # Use the original __getitem__ logic but without preloading check
+            # This is a temporary call to get all data parts for one item
+            item = self._get_item_on_the_fly(index)
+            
+            # Move all tensors in model_inputs to the target device
+            model_inputs = item["model_inputs"]
+            for k, v in model_inputs.items():
+                if isinstance(v, torch.Tensor):
+                    model_inputs[k] = v.to(self.device)
+            
+            # For span_labels which is a list of dicts
+            if "span_labels" in model_inputs:
+                 model_inputs["span_labels"]['spans'] = model_inputs["span_labels"]['spans'].to(self.device)
+                 
+            self.processed_data.append(item)
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
+        if self.preload_to_gpu:
+            return self.processed_data[index]
+        else:
+            return self._get_item_on_the_fly(index)
+
+    def _get_item_on_the_fly(self, index):
+        """The original __getitem__ logic for loading data from disk."""
         meta = self.data[index]
 
         model_inputs = dict()

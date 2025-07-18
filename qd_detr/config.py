@@ -42,6 +42,8 @@ class BaseOptions(object):
         parser.add_argument("--no_pin_memory", action="store_true",
                             help="Don't use pin_memory=True for dataloader. "
                                  "ref: https://discuss.pytorch.org/t/should-we-set-non-blocking-to-true/38234/4")
+        parser.add_argument("--preload_to_gpu", action="store_true",
+                            help="Load the entire dataset into GPU memory to accelerate training.")
 
         # training config
         parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
