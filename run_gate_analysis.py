@@ -158,21 +158,23 @@ def create_dummy_model(config):
             super().__init__()
             self.avigate_fusion = AVIGATEFusionCustom(
                 vid_dim=config.get('hidden_dim', 256),
-                aud_dim=config.get('hidden_dim', 256),
+                aud_dim=config.get('hidden_dim', 256), 
                 hidden_dim=config.get('hidden_dim', 256),
                 n_heads=config.get('nheads', 8),
-                num_layers=config.get('num_layers', 1),
+                num_layers=config.get('num_layers', 4),  # 4개 레이어로 수정
                 gating_type=config.get('gating_type', 'global')
             )
             
         def forward(self, batch):
             # 더미 구현
             bs = batch.get('batch_size', 1)
-            seq_len = batch.get('seq_len', 75)  # 기본 시퀀스 길이
+            seq_len = batch.get('seq_len', 75)  # 실제 시퀀스 길이 사용
             hidden_dim = 256
             
-            video_feat = torch.randn(bs, seq_len, hidden_dim)
-            audio_feat = torch.randn(bs, seq_len, hidden_dim)
+            # 모델과 같은 디바이스에 텐서 생성
+            device = next(self.parameters()).device
+            video_feat = torch.randn(bs, seq_len, hidden_dim, device=device)
+            audio_feat = torch.randn(bs, seq_len, hidden_dim, device=device)
             
             fused_feat = self.avigate_fusion(video_feat, audio_feat)
             
@@ -182,23 +184,70 @@ def create_dummy_model(config):
 
 def create_dummy_dataloader(data_path, max_samples, batch_size):
     """더미 데이터로더를 생성합니다."""
-    print(f"Creating dummy dataloader with {max_samples} samples...")
+    print(f"Creating dataloader with {max_samples} samples...")
     
     # 실제 데이터가 있다면 로드, 없으면 더미 데이터 생성
     if os.path.exists(data_path):
         try:
-            with open(data_path, 'r') as f:
-                data = json.load(f)
+            data = []
+            
+            # 파일 확장자에 따라 다른 로딩 방식 사용
+            if data_path.endswith('.jsonl'):
+                print(f"Loading JSONL file: {data_path}")
+                with open(data_path, 'r', encoding='utf-8') as f:
+                    for line_idx, line in enumerate(f):
+                        if line_idx >= max_samples:
+                            break
+                        line = line.strip()
+                        if line:
+                            try:
+                                item = json.loads(line)
+                                data.append(item)
+                            except json.JSONDecodeError as e:
+                                print(f"Warning: Failed to parse line {line_idx + 1}: {e}")
+                                continue
+                                
+            elif data_path.endswith('.json'):
+                print(f"Loading JSON file: {data_path}")
+                with open(data_path, 'r', encoding='utf-8') as f:
+                    all_data = json.load(f)
+                    if isinstance(all_data, list):
+                        data = all_data[:max_samples]
+                    else:
+                        # 단일 객체인 경우
+                        data = [all_data]
+            else:
+                print(f"Warning: Unsupported file format. Expected .json or .jsonl")
+                raise ValueError("Unsupported file format")
+            
             print(f"Loaded {len(data)} samples from {data_path}")
-            data = data[:max_samples]  # 최대 샘플 수 제한
-        except:
-            print("Failed to load data, using dummy data")
-            data = [{'qid': f'dummy_{i}', 'batch_size': batch_size, 'seq_len': 75} 
-                   for i in range(max_samples)]
+            
+            # 데이터 구조 확인 및 표준화
+            standardized_data = []
+            for i, item in enumerate(data):
+                # qid 추출 (다양한 필드명 시도)
+                qid = item.get('qid') or item.get('query_id') or item.get('id') or f'sample_{i}'
+                
+                # 비디오 길이 정보 추출 (있다면)
+                duration = item.get('duration', 150)  # 기본 150초
+                seq_len = min(int(duration * 0.5), 150)  # 0.5fps 가정, 최대 150 프레임
+                
+                standardized_item = {
+                    'qid': qid,
+                    'seq_len': seq_len,
+                    'original_data': item  # 원본 데이터 보존
+                }
+                standardized_data.append(standardized_item)
+            
+            data = standardized_data
+            
+        except Exception as e:
+            print(f"Failed to load data from {data_path}: {e}")
+            print("Using dummy data instead...")
+            data = [{'qid': f'dummy_{i}', 'seq_len': 75} for i in range(max_samples)]
     else:
         print("Data file not found, using dummy data")
-        data = [{'qid': f'dummy_{i}', 'batch_size': batch_size, 'seq_len': 75} 
-               for i in range(max_samples)]
+        data = [{'qid': f'dummy_{i}', 'seq_len': 75} for i in range(max_samples)]
     
     # 배치로 그룹화
     batches = []
@@ -207,7 +256,8 @@ def create_dummy_dataloader(data_path, max_samples, batch_size):
         batch = {
             'batch_size': len(batch_data),
             'seq_len': batch_data[0].get('seq_len', 75),
-            'qids': [item.get('qid', f'sample_{i+j}') for j, item in enumerate(batch_data)]
+            'qids': [item.get('qid', f'sample_{i+j}') for j, item in enumerate(batch_data)],
+            'original_data': [item.get('original_data', {}) for item in batch_data]
         }
         batches.append(batch)
     
@@ -360,6 +410,12 @@ def main():
         # 빠른 요약 출력
         if hasattr(model, 'avigate_fusion'):
             model.avigate_fusion.print_gate_summary()
+            
+            # 상세한 qid 레벨 분석 출력
+            print("\n" + "="*50)
+            print("DETAILED QID-LEVEL GATE ANALYSIS")
+            print("="*50)
+            model.avigate_fusion.print_detailed_gate_summary()
         
     except Exception as e:
         print(f"Error during analysis: {e}")

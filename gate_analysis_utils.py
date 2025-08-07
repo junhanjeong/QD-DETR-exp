@@ -68,7 +68,10 @@ class GateAnalyzer:
         # 4. Gate 활성화 패턴 분석
         self._analyze_activation_patterns()
         
-        # 5. 요약 리포트 생성
+        # 5. 상세 gate 분석 (새로 추가)
+        self._analyze_detailed_gates()
+        
+        # 6. 요약 리포트 생성
         self._generate_summary_report()
         
         print(f"Analysis complete. Results saved to {save_dir}")
@@ -381,6 +384,117 @@ class GateAnalyzer:
         except ImportError:
             print("Scikit-learn not available. Skipping clustering analysis.")
     
+    def _analyze_detailed_gates(self):
+        """상세한 gate 분석을 수행합니다."""
+        print("Analyzing detailed gates...")
+        
+        # AVIGATEFusionCustom에서 상세 분석 실행
+        detailed_analysis = self.model.get_detailed_gate_analysis()
+        if detailed_analysis is None:
+            print("No detailed gate analysis available.")
+            return
+        
+        # 상세 분석 결과를 JSON으로 저장
+        with open(os.path.join(self.results_dir, 'detailed_gate_analysis.json'), 'w') as f:
+            json.dump(detailed_analysis, f, indent=2)
+        
+        # 상세 분석 결과 출력
+        self.model.print_detailed_gate_summary()
+        
+        # 쿼리별 gate 값 분포 시각화
+        self._plot_query_gate_distributions(detailed_analysis)
+        
+        # 레이어별 gate 통계 시각화
+        self._plot_layer_gate_statistics(detailed_analysis)
+    
+    def _plot_query_gate_distributions(self, detailed_analysis):
+        """쿼리별 gate 값 분포를 시각화합니다."""
+        rankings = detailed_analysis['query_rankings']
+        
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # MHA Top 10
+        mha_top_qids, mha_top_values = zip(*rankings['mha_gates']['top_10'])
+        ax1.bar(range(len(mha_top_qids)), mha_top_values, color='skyblue')
+        ax1.set_title('Top 10 MHA Gate Values')
+        ax1.set_xlabel('Rank')
+        ax1.set_ylabel('Gate Value')
+        ax1.set_xticks(range(len(mha_top_qids)))
+        ax1.set_xticklabels([f'Q{qid}' for qid in mha_top_qids], rotation=45)
+        
+        # MHA Bottom 10
+        mha_bot_qids, mha_bot_values = zip(*rankings['mha_gates']['bottom_10'])
+        ax2.bar(range(len(mha_bot_qids)), mha_bot_values, color='lightcoral')
+        ax2.set_title('Bottom 10 MHA Gate Values')
+        ax2.set_xlabel('Rank')
+        ax2.set_ylabel('Gate Value')
+        ax2.set_xticks(range(len(mha_bot_qids)))
+        ax2.set_xticklabels([f'Q{qid}' for qid in mha_bot_qids], rotation=45)
+        
+        # FFN Top 10
+        ffn_top_qids, ffn_top_values = zip(*rankings['ffn_gates']['top_10'])
+        ax3.bar(range(len(ffn_top_qids)), ffn_top_values, color='lightgreen')
+        ax3.set_title('Top 10 FFN Gate Values')
+        ax3.set_xlabel('Rank')
+        ax3.set_ylabel('Gate Value')
+        ax3.set_xticks(range(len(ffn_top_qids)))
+        ax3.set_xticklabels([f'Q{qid}' for qid in ffn_top_qids], rotation=45)
+        
+        # FFN Bottom 10
+        ffn_bot_qids, ffn_bot_values = zip(*rankings['ffn_gates']['bottom_10'])
+        ax4.bar(range(len(ffn_bot_qids)), ffn_bot_values, color='lightsalmon')
+        ax4.set_title('Bottom 10 FFN Gate Values')
+        ax4.set_xlabel('Rank')
+        ax4.set_ylabel('Gate Value')
+        ax4.set_xticks(range(len(ffn_bot_qids)))
+        ax4.set_xticklabels([f'Q{qid}' for qid in ffn_bot_qids], rotation=45)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.results_dir, 'query_gate_rankings.png'),
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_layer_gate_statistics(self, detailed_analysis):
+        """레이어별 gate 통계를 시각화합니다."""
+        layer_stats = detailed_analysis['layer_gate_statistics']
+        
+        layers = list(layer_stats.keys())
+        mha_means = [layer_stats[layer]['mha_statistics']['mean'] for layer in layers]
+        mha_stds = [layer_stats[layer]['mha_statistics']['std'] for layer in layers]
+        ffn_means = [layer_stats[layer]['ffn_statistics']['mean'] for layer in layers]
+        ffn_stds = [layer_stats[layer]['ffn_statistics']['std'] for layer in layers]
+        
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # MHA 평균값
+        ax1.bar([f'L{layer}' for layer in layers], mha_means, color='skyblue', alpha=0.7)
+        ax1.set_title('MHA Gate Mean Values by Layer')
+        ax1.set_ylabel('Mean Gate Value')
+        ax1.grid(True, alpha=0.3)
+        
+        # MHA 표준편차
+        ax2.bar([f'L{layer}' for layer in layers], mha_stds, color='navy', alpha=0.7)
+        ax2.set_title('MHA Gate Standard Deviation by Layer')
+        ax2.set_ylabel('Standard Deviation')
+        ax2.grid(True, alpha=0.3)
+        
+        # FFN 평균값
+        ax3.bar([f'L{layer}' for layer in layers], ffn_means, color='lightgreen', alpha=0.7)
+        ax3.set_title('FFN Gate Mean Values by Layer')
+        ax3.set_ylabel('Mean Gate Value')
+        ax3.grid(True, alpha=0.3)
+        
+        # FFN 표준편차
+        ax4.bar([f'L{layer}' for layer in layers], ffn_stds, color='darkgreen', alpha=0.7)
+        ax4.set_title('FFN Gate Standard Deviation by Layer')
+        ax4.set_ylabel('Standard Deviation')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.results_dir, 'layer_gate_statistics.png'),
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+
     def _generate_summary_report(self):
         """분석 결과 요약 리포트를 생성합니다."""
         print("Generating summary report...")
@@ -415,7 +529,9 @@ class GateAnalyzer:
 
 """
         
-        for layer_idx, layer_stats in stats['layer_statistics'].items():
+        for layer_key, layer_stats in stats['layer_statistics'].items():
+            # layer_key는 문자열이므로 적절히 변환
+            layer_idx = layer_key if isinstance(layer_key, str) else str(layer_key)
             report += f"""
 ### Layer {layer_idx}
 - **Attention Gate**: Mean = {layer_stats['attention_mean']:.4f}, Std = {layer_stats['attention_std']:.4f}
@@ -435,7 +551,7 @@ class GateAnalyzer:
    - FFN gate variability (std): {stats['ffn_gates']['std']:.3f}
 
 3. **Layer Progression**: 
-   - Gate values show {'increasing' if stats['layer_statistics']['1']['attention_mean'] > stats['layer_statistics']['0']['attention_mean'] else 'decreasing'} trend across layers (if multi-layer)
+   - Gate values show layer-wise progression patterns across the network
 
 ## Files Generated
 - `overall_statistics.png`: Overall distribution and layer-wise trends

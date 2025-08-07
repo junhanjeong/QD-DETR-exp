@@ -61,6 +61,7 @@ def find_avigate_fusion_module(model):
     # 가능한 속성 이름들
     possible_names = [
         'avigate_fusion',
+        'fusion',  # 실제 체크포인트에서 사용되는 이름
         'fusion_module', 
         'multimodal_fusion',
         'audio_video_fusion'
@@ -74,11 +75,36 @@ def find_avigate_fusion_module(model):
     
     # 재귀적으로 하위 모듈 검색
     for name, module in model.named_modules():
-        if 'avigate' in name.lower() or 'fusion' in name.lower():
+        if any(keyword in name.lower() for keyword in ['avigate', 'fusion']):
             print(f"Found potential fusion module: {name}")
             return module
     
     return None
+
+def extract_module_config(old_module):
+    """기존 AVIGATE 모듈에서 설정을 추출합니다."""
+    # 기본 설정
+    config = {
+        'vid_dim': 256,
+        'aud_dim': 256,
+        'hidden_dim': 256,
+        'n_heads': 8,
+        'num_layers': 1
+    }
+    
+    # 모듈에서 설정 추출 시도
+    if hasattr(old_module, 'layers') and hasattr(old_module.layers, '__len__'):
+        config['num_layers'] = len(old_module.layers)
+        print(f"Extracted num_layers: {config['num_layers']} from existing module")
+    
+    if hasattr(old_module, 'layers') and len(old_module.layers) > 0:
+        first_layer = old_module.layers[0]
+        if hasattr(first_layer, 'self_attn'):
+            config['hidden_dim'] = first_layer.self_attn.embed_dim
+            config['n_heads'] = first_layer.self_attn.num_heads
+            print(f"Extracted hidden_dim: {config['hidden_dim']}, n_heads: {config['n_heads']}")
+    
+    return config
 
 def create_new_avigate_fusion(old_module, gating_type):
     """새로운 gate 추적 기능이 있는 AVIGATEFusion을 생성합니다."""
@@ -97,40 +123,90 @@ def create_new_avigate_fusion(old_module, gating_type):
     
     return new_module
 
-def extract_module_config(module):
-    """기존 모듈에서 설정을 추출합니다."""
+def extract_avigate_config_from_checkpoint(checkpoint):
+    """체크포인트에서 AVIGATE 설정을 추출합니다."""
+    # 기본 설정
     config = {
-        'vid_dim': 256,  # 기본값
+        'vid_dim': 256,
         'aud_dim': 256,
         'hidden_dim': 256,
         'n_heads': 8,
-        'num_layers': 1
+        'num_layers': 1  # 기본값
     }
     
-    try:
-        # fusion_layers에서 설정 추출
-        if hasattr(module, 'fusion_layers') and len(module.fusion_layers) > 0:
-            first_layer = module.fusion_layers[0]
-            config['num_layers'] = len(module.fusion_layers)
-            
-            if hasattr(first_layer, 'n_heads'):
-                config['n_heads'] = first_layer.n_heads
-                
-            if hasattr(first_layer, 'head_dim'):
-                config['hidden_dim'] = first_layer.n_heads * first_layer.head_dim
-            
-            # Linear layer에서 차원 추출
-            if hasattr(first_layer, 'a_proj'):
-                config['hidden_dim'] = first_layer.a_proj.in_features
-                config['vid_dim'] = config['hidden_dim']
-                config['aud_dim'] = config['hidden_dim']
-        
-        print(f"Extracted config: {config}")
-        
-    except Exception as e:
-        print(f"Warning: Could not extract full config, using defaults: {e}")
+    # 레이어 수 추출 - fusion.fusion_layers 패턴 확인
+    layer_count = 0
+    max_layer_idx = -1
+    
+    for key in checkpoint.keys():
+        # fusion.fusion_layers.X.xxx 패턴 확인
+        if 'fusion.fusion_layers.' in key:
+            try:
+                layer_idx = int(key.split('fusion.fusion_layers.')[1].split('.')[0])
+                max_layer_idx = max(max_layer_idx, layer_idx)
+            except (IndexError, ValueError):
+                continue
+        # 기존 avigate_fusion 패턴도 확인
+        elif 'avigate_fusion' in key and 'layers.' in key:
+            try:
+                layer_idx = int(key.split('layers.')[1].split('.')[0])
+                layer_count = max(layer_count, layer_idx + 1)
+            except (IndexError, ValueError):
+                continue
+    
+    if max_layer_idx >= 0:
+        config['num_layers'] = max_layer_idx + 1
+        print(f"Detected {config['num_layers']} AVIGATE fusion layers from fusion.fusion_layers")
+    elif layer_count > 0:
+        config['num_layers'] = layer_count
+        print(f"Detected {layer_count} AVIGATE fusion layers from avigate_fusion.layers")
+    else:
+        print("Could not detect layer count, using default: 1")
+    
+    # 다른 설정들도 체크포인트에서 추출 시도
+    for key, tensor in checkpoint.items():
+        if ('fusion.fusion_layers.' in key or 'avigate_fusion' in key) and hasattr(tensor, 'shape'):
+            if 'mlp_mha.0.weight' in key and len(tensor.shape) == 2:
+                # MLP 입력 차원에서 hidden_dim 추출
+                input_dim = tensor.shape[1]
+                if input_dim % 2 == 0:  # video + audio concat이므로 짝수여야 함
+                    config['hidden_dim'] = input_dim // 2
+            elif 'self_attn' in key and 'in_proj_weight' in key:
+                config['hidden_dim'] = tensor.shape[1]
     
     return config
+
+def transfer_weights_to_multilayer(checkpoint_state, avigate_fusion_module):
+    """1개 레이어의 가중치를 다중 레이어에 복제하여 전송"""
+    print(f"Transferring weights to {len(avigate_fusion_module.fusion_layers)} layers...")
+    
+    # 현재 모듈의 state dict 가져오기
+    module_state = avigate_fusion_module.state_dict()
+    
+    # Layer 0에 해당하는 가중치들 찾기
+    layer_0_weights = {}
+    for key, value in checkpoint_state.items():
+        if 'fusion.fusion_layers.0.' in key:
+            # fusion.fusion_layers.0.xxx -> fusion_layers.0.xxx
+            new_key = key.replace('fusion.fusion_layers.', 'fusion_layers.')
+            if new_key in module_state:
+                layer_0_weights[new_key] = value
+    
+    transferred_count = 0
+    # Layer 0의 가중치를 모든 레이어에 복제
+    for layer_idx in range(len(avigate_fusion_module.fusion_layers)):
+        for orig_key, weight in layer_0_weights.items():
+            # fusion_layers.0.xxx -> fusion_layers.{layer_idx}.xxx
+            target_key = orig_key.replace('fusion_layers.0.', f'fusion_layers.{layer_idx}.')
+            if target_key in module_state:
+                if weight.shape == module_state[target_key].shape:
+                    module_state[target_key] = weight.clone()
+                    transferred_count += 1
+    
+    # 새로운 state dict 로드
+    avigate_fusion_module.load_state_dict(module_state, strict=False)
+    print(f"Transferred {transferred_count} weights across {len(avigate_fusion_module.fusion_layers)} layers")
+
 
 def transfer_weights(old_state_dict, new_module):
     """기존 가중치를 새로운 모듈로 전송합니다."""
@@ -139,6 +215,9 @@ def transfer_weights(old_state_dict, new_module):
     # 가중치 매핑
     transferred_keys = []
     skipped_keys = []
+    
+    # 새로운 모듈의 레이어 수 확인
+    num_new_layers = len(new_module.fusion_layers)
     
     for old_key, old_weight in old_state_dict.items():
         # Gate tracking 관련 키는 건너뛰기
@@ -161,6 +240,15 @@ def transfer_weights(old_state_dict, new_module):
                 new_state_dict[mapped_key] = old_weight
                 transferred_keys.append(f"{old_key} -> {mapped_key}")
             else:
+                # 레이어 복제 시도 (1개 레이어를 여러 레이어로 복제)
+                if 'fusion_layers.0.' in old_key:
+                    base_key = old_key.replace('fusion_layers.0.', 'fusion_layers.{}.', 1)
+                    for layer_idx in range(1, num_new_layers):
+                        target_key = base_key.format(layer_idx)
+                        if target_key in new_state_dict and old_weight.shape == new_state_dict[target_key].shape:
+                            new_state_dict[target_key] = old_weight.clone()
+                            transferred_keys.append(f"{old_key} -> {target_key} (replicated)")
+                
                 skipped_keys.append(old_key)
     
     # 새로운 state dict 로드
@@ -276,8 +364,13 @@ def load_legacy_model_with_gate_tracking(model_path, gating_type='global', devic
         # 더미 모델 생성 (실제 사용 시 프로젝트 구조에 맞게 수정)
         model = create_dummy_model_structure(model_state, gating_type)
     
-    # Gate 추적 기능 추가
-    model = adapt_legacy_model(model, gating_type)
+    # Gate 추적 기능을 위한 가중치 전송 (모델 구조는 유지)
+    if hasattr(model, 'avigate_fusion'):
+        print("Transferring weights to 4-layer avigate_fusion...")
+        transfer_weights_to_multilayer(model_state, model.avigate_fusion)
+        model.avigate_fusion.enable_gate_tracking()
+    else:
+        print("Warning: No avigate_fusion found in dummy model")
     
     model.eval()
     model.to(device)
@@ -287,13 +380,34 @@ def load_legacy_model_with_gate_tracking(model_path, gating_type='global', devic
 
 def create_dummy_model_structure(state_dict, gating_type):
     """상태 딕셔너리에서 더미 모델 구조 생성"""
+    
+    # 상태 딕셔너리에서 레이어 수 추출 - fusion 접두사 고려
+    layer_count = 1  # 기본값
+    max_layer_idx = -1
+    
+    for key in state_dict.keys():
+        # fusion.fusion_layers.0, fusion.fusion_layers.1, ... 패턴 확인
+        if 'fusion.fusion_layers.' in key:
+            try:
+                # "fusion.fusion_layers.X.xxx" -> X 추출
+                layer_idx = int(key.split('fusion.fusion_layers.')[1].split('.')[0])
+                max_layer_idx = max(max_layer_idx, layer_idx)
+            except (IndexError, ValueError):
+                continue
+    
+    if max_layer_idx >= 0:
+        layer_count = max_layer_idx + 1
+        print(f"Creating dummy model with {layer_count} AVIGATE layers (detected from fusion.fusion_layers)")
+    else:
+        print(f"Creating dummy model with {layer_count} AVIGATE layers (default)")
+    
     class LegacyModel(nn.Module):
-        def __init__(self, gating_type):
+        def __init__(self, gating_type, num_layers):
             super().__init__()
-            # 기본 AVIGATEFusion 구조 생성
+            # 기본 AVIGATEFusion 구조 생성 - 감지된 레이어 수 사용
             self.avigate_fusion = AVIGATEFusionCustom(
                 vid_dim=256, aud_dim=256, hidden_dim=256,
-                n_heads=8, num_layers=1, gating_type=gating_type
+                n_heads=8, num_layers=num_layers, gating_type=gating_type
             )
             
         def forward(self, batch):
@@ -301,13 +415,15 @@ def create_dummy_model_structure(state_dict, gating_type):
             bs = batch.get('batch_size', 1)
             seq_len = batch.get('seq_len', 75)
             
-            video_feat = torch.randn(bs, seq_len, 256)
-            audio_feat = torch.randn(bs, seq_len, 256)
+            # 모델과 같은 디바이스에 텐서 생성
+            device = next(self.parameters()).device
+            video_feat = torch.randn(bs, seq_len, 256, device=device)
+            audio_feat = torch.randn(bs, seq_len, 256, device=device)
             
             fused_feat = self.avigate_fusion(video_feat, audio_feat)
             return {'predictions': fused_feat}
     
-    return LegacyModel(gating_type)
+    return LegacyModel(gating_type, layer_count)
 
 # 사용 예시 함수들
 def quick_test_legacy_model(model_path, gating_type='global'):
