@@ -127,8 +127,9 @@ class Transformer(nn.Module):
         mask = mask[:, :video_length + 1]
         pos_embed = pos_embed[:video_length + 1]
 
-
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)  # (L, batch_size, d)
+        # ========== Skip Regular Encoder Layer =============
+        # Skip self.encoder completely - go directly from T2V to decoder
+        memory = src  # Use T2V output directly as memory
         memory_global, memory_local = memory[0], memory[1:]
         mask_local = mask[:, 1:]
         pos_embed_local = pos_embed[1:]
