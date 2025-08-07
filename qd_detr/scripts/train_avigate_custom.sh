@@ -4,12 +4,12 @@ v_feat_types=slowfast_clip
 t_feat_type=clip
 a_feat_type=pann
 results_root=results
-gating_type=clipwise # 'global' or 'clipwise' or 'elementwise'
+gating_type=global # 'global' or 'clipwise' or 'elementwise'
 input_dropout=0.5
 seed=2018
 fusion_layers=4
 fusion_n_heads=8
-exp_id=avigate_custom_${gating_type}_${input_dropout}_${seed}_l${fusion_layers}_h${fusion_n_heads}
+exp_id=t2v_ffn_avigate_custom_${gating_type}_${input_dropout}_${seed}_l${fusion_layers}_h${fusion_n_heads}
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
