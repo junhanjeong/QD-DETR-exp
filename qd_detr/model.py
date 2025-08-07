@@ -123,18 +123,22 @@ class QDDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
+        # Apply text projection first
+        src_txt = self.input_txt_proj(src_txt)
+        
         if self.use_avigate_custom:
             if src_aud is None:
                 raise ValueError("Audio features required when use_avigate_custom is True")
+            # Only apply input projections, fusion will be done after t2v
             src_vid = self.input_vid_proj(src_vid)
             src_aud = self.input_aud_proj(src_aud)
-            src_vid = self.fusion(video_feat=src_vid, audio_feat=src_aud, video_mask=src_vid_mask, audio_mask=src_aud_mask)
         
         elif src_aud is not None:
             src_vid = torch.cat([src_vid, src_aud], dim=2)
             src_vid = self.input_vid_proj(src_vid)
-
-        src_txt = self.input_txt_proj(src_txt)
+        else:
+            # Apply vid projection when no audio
+            src_vid = self.input_vid_proj(src_vid)
         src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
         mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()  # (bsz, L_vid+L_txt)
         # TODO should we remove or use different positional embeddings to the src_txt?
@@ -155,7 +159,17 @@ class QDDETR(nn.Module):
 
         video_length = src_vid.shape[1]
         
-        hs, reference, memory, memory_global = self.transformer(src, ~mask, self.query_embed.weight, pos, video_length=video_length)
+        # Pass fusion info to transformer
+        fusion_info = None
+        if self.use_avigate_custom:
+            fusion_info = {
+                'fusion_module': self.fusion,
+                'src_aud': src_aud,
+                'src_aud_mask': src_aud_mask
+            }
+        
+        hs, reference, memory, memory_global = self.transformer(src, ~mask, self.query_embed.weight, pos, 
+                                                               video_length=video_length, fusion_info=fusion_info)
         outputs_class = self.class_embed(hs)  # (#layers, batch_size, #queries, #classes)
         reference_before_sigmoid = inverse_sigmoid(reference)
         tmp = self.span_embed(hs)
@@ -192,7 +206,8 @@ class QDDETR(nn.Module):
         src_neg = torch.cat([src_, src_neg], dim=1)
         pos_neg = pos.clone()  # since it does not use actual content
 
-        _, _, memory_neg, memory_global_neg = self.transformer(src_neg, ~mask_neg, self.query_embed.weight, pos_neg, video_length=video_length)
+        _, _, memory_neg, memory_global_neg = self.transformer(src_neg, ~mask_neg, self.query_embed.weight, pos_neg, 
+                                                              video_length=video_length, fusion_info=fusion_info)
         vid_mem_neg = memory_neg[:, :src_vid.shape[1]]
 
 

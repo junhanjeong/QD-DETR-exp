@@ -104,7 +104,7 @@ class Transformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     # for tvsum, add video_length in argument
-    def forward(self, src, mask, query_embed, pos_embed, video_length=None):
+    def forward(self, src, mask, query_embed, pos_embed, video_length=None, fusion_info=None):
         """
         Args:
             src: (batch_size, L, d)
@@ -122,6 +122,45 @@ class Transformer(nn.Module):
         refpoint_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)  # (#queries, batch_size, d)
 
         src = self.t2v_encoder(src, src_key_padding_mask=mask, pos=pos_embed, video_length=video_length)  # (L, batch_size, d)
+        
+        # Apply AVIGATEFusionCustom after t2v if available
+        if fusion_info is not None:
+            fusion_module = fusion_info['fusion_module']
+            src_aud = fusion_info['src_aud']
+            src_aud_mask = fusion_info['src_aud_mask']
+            
+            # Extract features (including global token for self-attention)
+            global_token = src[0:1]  # (1, batch_size, d)
+            src_vid_post_t2v = src[1:video_length + 1]  # (L_vid, batch_size, d)
+            src_txt = src[video_length + 1:]  # (L_txt, batch_size, d)
+            
+            # Convert back to (batch_size, L, d) for fusion
+            global_token_batch = global_token.permute(1, 0, 2)  # (batch_size, 1, d)
+            src_vid_post_t2v_batch = src_vid_post_t2v.permute(1, 0, 2)  # (batch_size, L_vid, d)
+            src_aud_batch = src_aud  # Already (batch_size, L_aud, d)
+            
+            # Create video features including saliency token for self-attention
+            vid_with_saliency = torch.cat([global_token_batch, src_vid_post_t2v_batch], dim=1)  # (batch_size, 1+L_vid, d)
+            
+            # Create corresponding mask for video+saliency
+            saliency_mask = torch.ones(mask.shape[0], 1, dtype=mask.dtype, device=mask.device)  # (batch_size, 1)
+            vid_saliency_mask = torch.cat([saliency_mask, mask[:, 1:video_length + 1]], dim=1)  # (batch_size, 1+L_vid)
+            
+            # Apply fusion with modified module that handles saliency token
+            vid_fused_with_saliency = self._apply_fusion_with_saliency(
+                fusion_module, vid_with_saliency, src_aud_batch, 
+                vid_saliency_mask, src_aud_mask
+            )
+            
+            # Extract fused results
+            global_token_fused = vid_fused_with_saliency[:, 0:1]  # (batch_size, 1, d)
+            src_vid_fused = vid_fused_with_saliency[:, 1:]  # (batch_size, L_vid, d)
+            
+            # Convert back to (L, batch_size, d) and reassemble
+            global_token = global_token_fused.permute(1, 0, 2)  # (1, batch_size, d)
+            src_vid_fused = src_vid_fused.permute(1, 0, 2)  # (L_vid, batch_size, d)
+            src = torch.cat([global_token, src_vid_fused, src_txt], dim=0)  # (1 + L_vid + L_txt, batch_size, d)
+        
         # print('after encoder : ',src.shape)
         src = src[:video_length + 1]
         mask = mask[:, :video_length + 1]
@@ -141,6 +180,77 @@ class Transformer(nn.Module):
         # memory = memory.permute(1, 2, 0)  # (batch_size, d, L)
         memory_local = memory_local.transpose(0, 1)  # (batch_size, L, d)
         return hs, references, memory_local, memory_global
+
+    def _apply_fusion_with_saliency(self, fusion_module, vid_with_saliency, audio_feat, vid_mask, audio_mask):
+        """
+        Apply fusion with saliency token included in self-attention but excluded from cross-attention
+        """
+        # Extract saliency token and video features
+        saliency_token = vid_with_saliency[:, 0:1]  # (batch_size, 1, d)
+        video_feat = vid_with_saliency[:, 1:]  # (batch_size, L_vid, d)
+        
+        fused_feat = video_feat
+        for layer in fusion_module.fusion_layers:
+            # Use the custom layer that handles saliency token properly
+            fused_feat = self._apply_fusion_layer_with_saliency(
+                layer, fused_feat, audio_feat, saliency_token, 
+                vid_mask[:, 1:], audio_mask  # vid_mask without saliency mask
+            )
+        
+        # Concatenate saliency token back
+        result = torch.cat([saliency_token, fused_feat], dim=1)
+        return result
+    
+    def _apply_fusion_layer_with_saliency(self, layer, video_feat, audio_feat, saliency_token, video_mask, audio_mask):
+        """
+        Apply single fusion layer with saliency token included in self-attention only
+        """
+        # 1. Cross-attention and FFN (gated fusion) - same as original
+        gate_mha, gate_ffn = layer.gating_function(video_feat, audio_feat)
+        
+        bs, seq_len, hidden_dim = video_feat.shape
+        
+        # Custom Cross-Attention (same as original)
+        norm_audio = layer.norm1(audio_feat)
+        w = layer.a_proj.weight.view(layer.n_heads, layer.head_dim, hidden_dim)  
+        b = layer.a_proj.bias.view(layer.n_heads, layer.head_dim) if layer.a_proj.bias is not None else None
+        value_heads = [
+            F.linear(norm_audio, w[i], b[i] if b is not None else None)
+            for i in range(layer.n_heads)
+        ]
+        value = torch.stack(value_heads, dim=2)
+        value = value.permute(0, 2, 1, 3).contiguous()
+        
+        attn_output = value.permute(0, 2, 1, 3).contiguous().view(bs, seq_len, hidden_dim)
+        attn_output = layer.out_proj(attn_output)
+
+        # Gated Fusion Process
+        z = gate_mha * attn_output + video_feat
+        z_bar = gate_ffn * layer.ffn1(layer.norm2(z)) + z
+
+        # 2. Self-Attention with saliency token included
+        # Concatenate saliency token for self-attention
+        z_with_saliency = torch.cat([saliency_token, z_bar], dim=1)  # (batch_size, 1+L_vid, d)
+        
+        # Create mask for self-attention (saliency + video)
+        saliency_mask = torch.ones(video_mask.shape[0], 1, dtype=video_mask.dtype, device=video_mask.device)
+        self_attn_mask = torch.cat([saliency_mask, video_mask], dim=1)  # (batch_size, 1+L_vid)
+        
+        refined_z_with_saliency, _ = layer.self_attention(
+            query=layer.norm3(z_with_saliency),
+            key=layer.norm3(z_with_saliency),
+            value=layer.norm3(z_with_saliency),
+            key_padding_mask=self_attn_mask.eq(0) if self_attn_mask is not None else None
+        )
+        refined_z_with_saliency = refined_z_with_saliency + z_with_saliency
+
+        # Extract video part (excluding saliency token)
+        refined_z = refined_z_with_saliency[:, 1:]  # (batch_size, L_vid, d)
+
+        # FFN (only on video features)
+        final_output = layer.ffn2(layer.norm4(refined_z)) + refined_z
+
+        return final_output
 
 
 class TransformerEncoder(nn.Module):
