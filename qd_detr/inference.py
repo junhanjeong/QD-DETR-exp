@@ -523,8 +523,6 @@ def start_inference(train_opt=None, split=None, splitfile=None):
     if metrics_nms is not None:
         logger.info("metrics_nms {}".format(pprint.pformat(metrics_nms["brief"], indent=4)))
 
-from sys import argv
 if __name__ == '__main__':
-    _,_,_,_,split,_,splitfile = argv
-
-    start_inference(split=split, splitfile=splitfile)
+    # Rely on argparse parsing in TestOptions; do not manually unpack argv
+    start_inference()
