@@ -182,13 +182,103 @@ def compute_mr_results(model, eval_loader, opt, epoch_i=None, criterion=None, tb
     write_tb = tb_writer is not None and epoch_i is not None
 
     mr_res = []
+    # Gate logging setup
+    gate_collect_enabled = getattr(opt, "gate_log", False) and getattr(opt, "use_avigate_custom", False)
+    gate_sample_limit = getattr(opt, "gate_sample_count", -1)
+    collected_gate_samples = 0
+    gate_logs = []  # list of dicts per sample
+
+    # Prepare hook utilities if enabled
+    hooks = []
+    def _register_gate_hooks():
+        # traverse fusion layers
+        try:
+            fusion = model.fusion if hasattr(model, 'fusion') else None
+        except Exception:
+            fusion = None
+        if fusion is None:
+            return
+        for li, layer in enumerate(getattr(fusion, 'fusion_layers', [])):
+            gf = getattr(layer, 'gating_function', None)
+            if gf is None:
+                continue
+            # wrap forward to capture outputs
+            orig_forward = gf.forward
+            def make_wrapper(layer_idx, fn):
+                def wrapper(video_feat, audio_feat):
+                    out = fn(video_feat, audio_feat)
+                    # out is (gate_mha, gate_ffn)
+                    gate_logs_per_layer.append({
+                        "layer": layer_idx,
+                        "gate_mha": out[0].detach().cpu(),
+                        "gate_ffn": out[1].detach().cpu()
+                    })
+                    return out
+                return wrapper
+            gf._orig_forward = orig_forward
+            gf.forward = make_wrapper(li, orig_forward)
+            hooks.append(gf)
+
+    def _remove_gate_hooks():
+        # restore original forwards
+        for gf in hooks:
+            if hasattr(gf, '_orig_forward'):
+                gf.forward = gf._orig_forward
+                del gf._orig_forward
+        hooks.clear()
     for batch in tqdm(eval_loader, desc="compute st ed scores"):
         query_meta = batch[0]
         if opt.a_feat_dir is None:
             model_inputs, targets = prepare_batch_inputs(batch[1], opt.device, non_blocking=opt.pin_memory)
         else:
             model_inputs, targets = prepare_batch_inputs_audio(batch[1], opt.device, non_blocking=opt.pin_memory)
-        outputs = model(**model_inputs)
+        # Gate hook per batch
+        if gate_collect_enabled and (gate_sample_limit < 0 or collected_gate_samples < gate_sample_limit):
+            gate_logs_per_layer = []
+            _register_gate_hooks()
+            outputs = model(**model_inputs)
+            _remove_gate_hooks()
+            # gate_logs_per_layer: list of dicts for each layer call within forward
+            # Now we need to split per sample
+            # Determine gating type and shapes from first entry
+            if len(gate_logs_per_layer) > 0:
+                gating_type = getattr(getattr(model, 'fusion', None), 'fusion_layers', [])[0].gating_function.gating_type
+                bs = outputs["video_mask"].shape[0]
+                # gate_logs_per_layer entries are per layer in order, each has tensors of shape depending on gating type
+                # We'll build per-sample record with list over layers
+                for bi in range(bs):
+                    if gate_sample_limit >= 0 and collected_gate_samples >= gate_sample_limit:
+                        break
+                    sample_rec = {
+                        "qid": query_meta[bi].get("qid"),
+                        "vid": query_meta[bi].get("vid"),
+                        "layer_gates": [],
+                        "gating_type": gating_type,
+                    }
+                    for layer_entry in gate_logs_per_layer:
+                        gate_mha = layer_entry["gate_mha"]
+                        gate_ffn = layer_entry["gate_ffn"]
+                        # slice by sample
+                        gm = gate_mha[bi]
+                        gf = gate_ffn[bi]
+                        # For tensors, convert to nested lists reasonably (avoid huge sizes by respecting mask)
+                        # Use video mask length to trim sequence if present
+                        if gm.ndim >= 2 and "video_mask" in outputs:
+                            valid_len = int(outputs["video_mask"][bi].sum().cpu().item())
+                        else:
+                            valid_len = None
+                        def to_list(t):
+                            if valid_len is not None and t.ndim >= 2:
+                                t = t[:valid_len]
+                            return t.numpy().tolist()
+                        sample_rec["layer_gates"].append({
+                            "gate_mha": to_list(gm),
+                            "gate_ffn": to_list(gf),
+                        })
+                    gate_logs.append(sample_rec)
+                    collected_gate_samples += 1
+        else:
+            outputs = model(**model_inputs)
         prob = F.softmax(outputs["pred_logits"], -1)  # (batch_size, #queries, #classes=2)
         if opt.span_loss_type == "l1":
             scores = prob[..., 0]  # * (batch_size, #queries)  foreground label is 0, we directly take it
@@ -233,8 +323,25 @@ def compute_mr_results(model, eval_loader, opt, epoch_i=None, criterion=None, tb
             for k, v in loss_dict.items():
                 loss_meters[k].update(float(v) * weight_dict[k] if k in weight_dict else float(v))
 
+        # Early break if gate collection reached requested samples
+        if gate_collect_enabled and gate_sample_limit > 0 and collected_gate_samples >= gate_sample_limit:
+            break
         if opt.debug:
             break
+
+    # Save gate logs if collected
+    if gate_collect_enabled and len(gate_logs) > 0:
+        # resolve save path
+        save_path = getattr(opt, 'gate_save_path', None)
+        if save_path is None:
+            cnt_str = str(len(gate_logs)) if gate_sample_limit != -1 else "all"
+            save_path = os.path.join(opt.results_dir, f"gate_logs_{opt.eval_split_name}_N{cnt_str}.jsonl")
+        # Convert tensors already detached to lists; currently done above. Just save jsonl.
+        try:
+            save_jsonl(gate_logs, save_path)
+            logger.info(f"Saved gate logs to {save_path} ({len(gate_logs)} samples)")
+        except Exception as e:
+            logger.error(f"Failed to save gate logs: {e}")
 
     if write_tb and criterion:
         for k, v in loss_meters.items():

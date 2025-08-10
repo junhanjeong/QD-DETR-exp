@@ -241,4 +241,11 @@ class TestOptions(BaseOptions):
                                  help="dir to save results, if not set, fall back to training results_dir")
         self.parser.add_argument("--model_dir", type=str,
                                  help="dir contains the model file, will be converted to absolute path afterwards")
+        # Gate logging options
+        self.parser.add_argument("--gate_log", action="store_true",
+                                 help="Enable logging gate values during inference (only when use_avigate_custom)")
+        self.parser.add_argument("--gate_sample_count", type=int, default=-1,
+                                 help="Number of samples from the beginning to log gate values for. -1: all")
+        self.parser.add_argument("--gate_save_path", type=str, default=None,
+                                 help="Optional path to save gate logs (jsonl). Default: results_dir/gate_logs_<split>_N<cnt>.jsonl")
 
