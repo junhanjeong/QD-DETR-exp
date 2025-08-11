@@ -47,3 +47,22 @@ pip install torch==1.9.0+cu111 torchvision==0.10.0+cu111 torchaudio==0.9.0 -f ht
 pip install -r requirements.txt
 
 ```
+
+## 추론 시 Gate 저장 및 시각화
+
+inference를 할 때 gate를 저장하려면 아래와 같이 실행합니다.
+
+```bash
+bash qd_detr/scripts/inference.sh \
+  results/hl-video_tef-avigate_custom_elementwise_0.5_2018_l4_h4-2025_07_18_16_07_40/model_best.ckpt \
+  val \
+  --gate_log
+```
+
+저장된 gate 로그를 시각화하려면 다음 명령을 사용합니다.
+
+```bash
+python supplementary/visualize_gate_logs.py \
+  --input results/hl-video_tef-avigate_custom_elementwise_0.5_2018_l4_h4-2025_07_18_16_07_40/gate_logs_val_Nall.jsonl \
+  --num-samples 50
+```
