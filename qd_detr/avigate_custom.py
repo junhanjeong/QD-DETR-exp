@@ -3,76 +3,102 @@ from torch import nn
 import torch.nn.functional as F
 
 class GatingFunction(nn.Module):
-    def __init__(self, hidden_dim, gating_type='global'):
+    def __init__(self, hidden_dim, gating_type='global',
+                 mha_temp: float = 1.5,
+                 mha_bias_init: float = 1.0,
+                 mha_scale_init: float = 1.0,
+                 ffn_alpha_init: float = 0.3,
+                 ffn_film: bool = False,
+                 ffn_beta_init: float = 0.3):
         super().__init__()
         self.gating_type = gating_type
-        
+        self.ffn_film = ffn_film
+
+        # MHA gate parameters: sigmoid((raw + bias)/temp) * scale
+        self.mha_temp = mha_temp
+        self.mha_bias = nn.Parameter(torch.tensor(mha_bias_init, dtype=torch.float32))
+        self.mha_scale = nn.Parameter(torch.tensor(mha_scale_init, dtype=torch.float32))
+
+        # FFN gate parameters: tanh(raw) * alpha; optional FiLM shift
+        self.ffn_alpha = nn.Parameter(torch.tensor(ffn_alpha_init, dtype=torch.float32))
+        if self.ffn_film:
+            self.ffn_beta = nn.Parameter(torch.tensor(ffn_beta_init, dtype=torch.float32))
+
+        def make_heads(out_dim: int) -> nn.Module:
+            return nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_dim // 2, out_dim)
+            )
+
         if self.gating_type == 'global':
-            self.mlp_mha = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, 1)
-            )
-            self.mlp_ffn = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, 1)
-            )
+            self.mlp_mha = make_heads(1)
+            self.mlp_ffn = make_heads(1)
+            if self.ffn_film:
+                self.mlp_ffn_beta = make_heads(1)
         elif self.gating_type == 'clipwise':
-            self.mlp_mha = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, 1)  # clip별 스칼라
-            )
-            self.mlp_ffn = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, 1)
-            )
+            self.mlp_mha = make_heads(1)
+            self.mlp_ffn = make_heads(1)
+            if self.ffn_film:
+                self.mlp_ffn_beta = make_heads(1)
         elif self.gating_type == 'elementwise':
-            self.mlp_mha = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, hidden_dim)
-            )
-            self.mlp_ffn = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, hidden_dim)
-            )
+            self.mlp_mha = make_heads(hidden_dim)
+            self.mlp_ffn = make_heads(hidden_dim)
+            if self.ffn_film:
+                self.mlp_ffn_beta = make_heads(hidden_dim)
 
     def forward(self, video_feat, audio_feat):
         if self.gating_type == 'global':
             # (batch_size, seq_len, dim) -> (batch_size, dim)
             pooled_video = video_feat.mean(dim=1)
             pooled_audio = audio_feat.mean(dim=1)
-            
-            # (batch_size, dim * 2)
-            joint_representation = torch.cat([pooled_video, pooled_audio], dim=1)
+            joint = torch.cat([pooled_video, pooled_audio], dim=1)
 
-            gate_mha = torch.tanh(self.mlp_mha(joint_representation))
-            gate_ffn = torch.tanh(self.mlp_ffn(joint_representation))
-            return gate_mha.unsqueeze(-1), gate_ffn.unsqueeze(-1) # (batch_size, 1, 1) to allow broadcasting
+            raw_mha = self.mlp_mha(joint)
+            gate_mha = torch.sigmoid((raw_mha + self.mha_bias) / self.mha_temp) * self.mha_scale
+
+            raw_ffn = self.mlp_ffn(joint)
+            gate_ffn = torch.tanh(raw_ffn) * self.ffn_alpha
+            return gate_mha.unsqueeze(-1), gate_ffn.unsqueeze(-1)  # (bs, 1, 1)
 
         elif self.gating_type == 'clipwise':
             # (batch, seq_len, dim) → (batch, seq_len, 2*dim)
-            joint_representation = torch.cat([video_feat, audio_feat], dim=2)
-            gate_mha = torch.tanh(self.mlp_mha(joint_representation))  # (batch, seq_len, 1)
-            gate_ffn = torch.tanh(self.mlp_ffn(joint_representation))  # (batch, seq_len, 1)
+            joint = torch.cat([video_feat, audio_feat], dim=2)
+            raw_mha = self.mlp_mha(joint)
+            gate_mha = torch.sigmoid((raw_mha + self.mha_bias) / self.mha_temp)  * self.mha_scale  # (bs, L, 1)
+            raw_ffn = self.mlp_ffn(joint)
+            gate_ffn = torch.tanh(raw_ffn) * self.ffn_alpha  # (bs, L, 1)
             return gate_mha, gate_ffn
-        
+
         elif self.gating_type == 'elementwise':
             # (batch_size, seq_len, dim * 2)
-            joint_representation = torch.cat([video_feat, audio_feat], dim=2)
-            
-            gate_mha = torch.tanh(self.mlp_mha(joint_representation)) # (batch_size, seq_len, dim)
-            gate_ffn = torch.tanh(self.mlp_ffn(joint_representation)) # (batch_size, seq_len, dim)
+            joint = torch.cat([video_feat, audio_feat], dim=2)
+            raw_mha = self.mlp_mha(joint)
+            gate_mha = torch.sigmoid((raw_mha + self.mha_bias) / self.mha_temp) * self.mha_scale  # (bs, L, D)
+            raw_ffn = self.mlp_ffn(joint)
+            gate_ffn = torch.tanh(raw_ffn) * self.ffn_alpha  # (bs, L, D)
             return gate_mha, gate_ffn
 
 class GatedFusionBlockCustom(nn.Module):
-    def __init__(self, hidden_dim, n_heads, gating_type='global'):
+    def __init__(self, hidden_dim, n_heads, gating_type='global',
+                 mha_temp: float = 1.5,
+                 mha_bias_init: float = 1.0,
+                 mha_scale_init: float = 1.0,
+                 ffn_alpha_init: float = 0.3,
+                 ffn_film: bool = False,
+                 ffn_beta_init: float = 0.3):
         super().__init__()
-        self.gating_function = GatingFunction(hidden_dim, gating_type)
+        self.gating_function = GatingFunction(
+            hidden_dim, gating_type,
+            mha_temp=mha_temp,
+            mha_bias_init=mha_bias_init,
+            mha_scale_init=mha_scale_init,
+            ffn_alpha_init=ffn_alpha_init,
+            ffn_film=ffn_film,
+            ffn_beta_init=ffn_beta_init,
+        )
+        self.ffn_film = ffn_film
+        self.gating_type = gating_type
         
         self.a_proj = nn.Linear(hidden_dim, hidden_dim)
 
@@ -83,6 +109,9 @@ class GatedFusionBlockCustom(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim * 4, hidden_dim)
         )
+        # δ normalizations for stability
+        self.delta_norm_mha = nn.LayerNorm(hidden_dim)
+        self.delta_norm_ffn = nn.LayerNorm(hidden_dim)
         
         # Self-Attention for refining
         self.self_attention = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
@@ -125,11 +154,29 @@ class GatedFusionBlockCustom(nn.Module):
         attn_output = value.permute(0, 2, 1, 3).contiguous().view(bs, seq_len, hidden_dim)
         attn_output = self.out_proj(attn_output)
 
-        # 1. Gated Fusion Process
-        z = gate_mha * attn_output + video_feat
+        # 1. Gated Fusion Process with δ normalization and sigmoid MHA gate
+        delta_mha = self.delta_norm_mha(attn_output)
+        z = video_feat + gate_mha * delta_mha
         
-        # FFN with Gating
-        z_bar = gate_ffn * self.ffn1(self.norm2(z)) + z
+        # FFN with tanh(+α) gating; optional FiLM
+        ffn_delta = self.ffn1(self.norm2(z))
+        ffn_delta = self.delta_norm_ffn(ffn_delta)
+        if self.ffn_film:
+            # compute shift (beta) using the same inputs as gating
+            if self.gating_type == 'global':
+                pooled_video = video_feat.mean(dim=1)
+                pooled_audio = audio_feat.mean(dim=1)
+                joint = torch.cat([pooled_video, pooled_audio], dim=1)
+                raw_beta = self.gating_function.mlp_ffn_beta(joint)
+                gate_beta = torch.tanh(raw_beta) * self.gating_function.ffn_beta
+                gate_beta = gate_beta.unsqueeze(-1)  # (bs,1,1)
+            elif self.gating_type in ('clipwise', 'elementwise'):
+                joint = torch.cat([video_feat, audio_feat], dim=2)
+                raw_beta = self.gating_function.mlp_ffn_beta(joint)
+                gate_beta = torch.tanh(raw_beta) * self.gating_function.ffn_beta
+            z_bar = z + ffn_delta * (1 + gate_ffn) + gate_beta
+        else:
+            z_bar = z + gate_ffn * ffn_delta
 
         # 2. Refining Process
         # Self-Attention
@@ -148,11 +195,25 @@ class GatedFusionBlockCustom(nn.Module):
 
 
 class AVIGATEFusionCustom(nn.Module):
-    def __init__(self, vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1, gating_type='global'):
+    def __init__(self, vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1, gating_type='global',
+                 mha_temp: float = 1.5,
+                 mha_bias_init: float = 1.0,
+                 mha_scale_init: float = 1.0,
+                 ffn_alpha_init: float = 0.3,
+                 ffn_film: bool = False,
+                 ffn_beta_init: float = 0.3):
         super().__init__()
 
         self.fusion_layers = nn.ModuleList([
-            GatedFusionBlockCustom(hidden_dim, n_heads, gating_type=gating_type) for _ in range(num_layers)
+            GatedFusionBlockCustom(
+                hidden_dim, n_heads, gating_type=gating_type,
+                mha_temp=mha_temp,
+                mha_bias_init=mha_bias_init,
+                mha_scale_init=mha_scale_init,
+                ffn_alpha_init=ffn_alpha_init,
+                ffn_film=ffn_film,
+                ffn_beta_init=ffn_beta_init,
+            ) for _ in range(num_layers)
         ])
     
     def forward(self, video_feat, audio_feat, video_mask=None, audio_mask=None):

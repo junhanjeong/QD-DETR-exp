@@ -113,6 +113,19 @@ class BaseOptions(object):
         parser.add_argument('--num_queries', default=10, type=int,
                             help="Number of query slots")
         parser.add_argument('--pre_norm', action='store_true')
+        # AVIGATE gating hyperparameters
+        parser.add_argument("--mha_gate_temp", type=float, default=1.5,
+                            help="Temperature for sigmoid MHA gate (higher reduces saturation)")
+        parser.add_argument("--mha_gate_bias_init", type=float, default=1.0,
+                            help="Additive bias before sigmoid for MHA gate (stabilize away from 0)")
+        parser.add_argument("--mha_gate_scale_init", type=float, default=1.0,
+                            help="Multiplicative scale after sigmoid for MHA gate")
+        parser.add_argument("--ffn_gate_alpha_init", type=float, default=0.3,
+                            help="Global scale alpha for tanh FFN gate")
+        parser.add_argument("--ffn_gate_film", action="store_true",
+                            help="Enable FiLM (scale+shift) for FFN gating")
+        parser.add_argument("--ffn_gate_beta_init", type=float, default=0.3,
+                            help="Global scale for FFN FiLM shift beta")
         # other model configs
         parser.add_argument("--n_input_proj", type=int, default=2, help="#layers to encoder input")
         parser.add_argument("--contrastive_hdim", type=int, default=64, help="dim for contrastive embeddings")
@@ -248,4 +261,3 @@ class TestOptions(BaseOptions):
                                  help="Number of samples from the beginning to log gate values for. -1: all")
         self.parser.add_argument("--gate_save_path", type=str, default=None,
                                  help="Optional path to save gate logs (jsonl). Default: results_dir/gate_logs_<split>_N<cnt>.jsonl")
-

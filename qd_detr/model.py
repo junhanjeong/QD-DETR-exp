@@ -27,7 +27,9 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_avigate_custom=False, gating_type='global', fusion_layers=4, fusion_n_heads=8):
+                 use_avigate_custom=False, gating_type='global', fusion_layers=4, fusion_n_heads=8,
+                 mha_gate_temp: float = 1.5, mha_gate_bias_init: float = 1.0, mha_gate_scale_init: float = 1.0,
+                 ffn_gate_alpha_init: float = 0.3, ffn_gate_film: bool = False, ffn_gate_beta_init: float = 0.3):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -75,7 +77,12 @@ class QDDETR(nn.Module):
         self.use_avigate_custom = use_avigate_custom
 
         if use_avigate_custom:
-            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=fusion_n_heads, num_layers=fusion_layers, gating_type=gating_type)
+            self.fusion = AVIGATEFusionCustom(
+                vid_dim, aud_dim, hidden_dim,
+                n_heads=fusion_n_heads, num_layers=fusion_layers, gating_type=gating_type,
+                mha_temp=mha_gate_temp, mha_bias_init=mha_gate_bias_init, mha_scale_init=mha_gate_scale_init,
+                ffn_alpha_init=ffn_gate_alpha_init, ffn_film=ffn_gate_film, ffn_beta_init=ffn_gate_beta_init
+            )
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
@@ -585,6 +592,12 @@ def build_model(args):
             gating_type=args.gating_type,
             fusion_layers=args.fusion_layers,
             fusion_n_heads=args.fusion_n_heads,
+            mha_gate_temp=args.mha_gate_temp,
+            mha_gate_bias_init=args.mha_gate_bias_init,
+            mha_gate_scale_init=args.mha_gate_scale_init,
+            ffn_gate_alpha_init=args.ffn_gate_alpha_init,
+            ffn_gate_film=args.ffn_gate_film,
+            ffn_gate_beta_init=args.ffn_gate_beta_init,
         )
 
     matcher = build_matcher(args)
