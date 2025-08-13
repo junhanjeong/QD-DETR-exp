@@ -113,6 +113,8 @@ class BaseOptions(object):
         parser.add_argument("--ssm_enc_channels", type=int, default=64, help="Encoder channel size for DiagonalStrip-CNN")
         parser.add_argument("--ssm_dilations", type=int, nargs='+', default=[1, 2, 4], help="Dilations for DiagonalStrip-CNN (list)")
         parser.add_argument("--ssm_diag_subtract", type=float, default=0.1, help="Diagonal suppression coefficient for SSM")
+        parser.add_argument("--ssm_use_video_branch", type=int, default=1, choices=[0, 1],
+                            help="Use video SSM branch in gate: 1=use (default), 0=audio-only")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,

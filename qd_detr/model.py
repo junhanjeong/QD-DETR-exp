@@ -593,6 +593,7 @@ def build_model(args):
             ssm_enc_channels=args.ssm_enc_channels,
             ssm_dilations=tuple(args.ssm_dilations) if isinstance(args.ssm_dilations, list) else args.ssm_dilations,
             ssm_diag_subtract=args.ssm_diag_subtract,
+            ssm_use_video_branch=bool(args.ssm_use_video_branch),
         )
 
     matcher = build_matcher(args)
