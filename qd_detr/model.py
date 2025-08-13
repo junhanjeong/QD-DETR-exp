@@ -27,7 +27,8 @@ class QDDETR(nn.Module):
                  num_queries, input_dropout, aux_loss=False,
                  contrastive_align_loss=False, contrastive_hdim=64,
                  max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2, aud_dim=0,
-                 use_avigate_custom=False, gating_type='global', fusion_layers=4, fusion_n_heads=8):
+                 use_avigate_custom=False, gating_type='global', fusion_layers=4, fusion_n_heads=8,
+                 ssm_band_width=8, ssm_enc_channels=64, ssm_dilations=(1,2,4), ssm_diag_subtract=0.1, ssm_use_video_branch=True):
         """ Initializes the model.
         Parameters:
             transformer: torch module of the transformer architecture. See transformer.py
@@ -75,7 +76,10 @@ class QDDETR(nn.Module):
         self.use_avigate_custom = use_avigate_custom
 
         if use_avigate_custom:
-            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=fusion_n_heads, num_layers=fusion_layers, gating_type=gating_type)
+            self.fusion = AVIGATEFusionCustom(vid_dim, aud_dim, hidden_dim, n_heads=fusion_n_heads, num_layers=fusion_layers, gating_type=gating_type,
+                                              ssm_band_width=ssm_band_width, ssm_enc_channels=ssm_enc_channels,
+                                              ssm_dilations=tuple(ssm_dilations) if not isinstance(ssm_dilations, tuple) else ssm_dilations,
+                                              ssm_diag_subtract=ssm_diag_subtract, ssm_use_video_branch=ssm_use_video_branch)
             self.input_vid_proj = nn.Sequential(*[
                 LinearLayer(vid_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
                 LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
@@ -585,6 +589,10 @@ def build_model(args):
             gating_type=args.gating_type,
             fusion_layers=args.fusion_layers,
             fusion_n_heads=args.fusion_n_heads,
+            ssm_band_width=args.ssm_band_width,
+            ssm_enc_channels=args.ssm_enc_channels,
+            ssm_dilations=tuple(args.ssm_dilations) if isinstance(args.ssm_dilations, list) else args.ssm_dilations,
+            ssm_diag_subtract=args.ssm_diag_subtract,
         )
 
     matcher = build_matcher(args)

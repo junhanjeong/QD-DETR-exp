@@ -108,6 +108,11 @@ class BaseOptions(object):
         parser.add_argument("--use_txt_pos", action="store_true", help="use position_embedding for text as well.")
         parser.add_argument("--use_avigate_custom", action="store_true", help="use AVIGATE custom fusion for video and audio")
         parser.add_argument("--gating_type", type=str, default="global", choices=["global", "clipwise", "elementwise", "global_diagstrip_ssm"], help="gating type for avigate_custom")
+        # SSM gate hyperparameters
+        parser.add_argument("--ssm_band_width", type=int, default=8, help="Diagonal strip half-width (w) for SSM gate")
+        parser.add_argument("--ssm_enc_channels", type=int, default=64, help="Encoder channel size for DiagonalStrip-CNN")
+        parser.add_argument("--ssm_dilations", type=int, nargs='+', default=[1, 2, 4], help="Dilations for DiagonalStrip-CNN (list)")
+        parser.add_argument("--ssm_diag_subtract", type=float, default=0.1, help="Diagonal suppression coefficient for SSM")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,

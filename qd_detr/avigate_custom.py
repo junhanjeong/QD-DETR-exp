@@ -4,9 +4,14 @@ import torch.nn.functional as F
 from .ssm_gate import DiagonalStripSSMGate
 
 class GatingFunction(nn.Module):
-    def __init__(self, hidden_dim, gating_type='global'):
+    def __init__(self, hidden_dim, gating_type='global', ssm_band_width=8, ssm_enc_channels=64, ssm_dilations=(1,2,4), ssm_diag_subtract=0.1, ssm_use_video_branch=True):
         super().__init__()
         self.gating_type = gating_type
+        self.ssm_cfg = dict(band_width=ssm_band_width,
+                            enc_channels=ssm_enc_channels,
+                            dilations=tuple(ssm_dilations) if not isinstance(ssm_dilations, tuple) else ssm_dilations,
+                            diag_subtract=ssm_diag_subtract,
+                            use_video_branch=ssm_use_video_branch)
         
         if self.gating_type == 'global':
             self.mlp_mha = nn.Sequential(
@@ -44,7 +49,7 @@ class GatingFunction(nn.Module):
             )
         elif self.gating_type == 'global_diagstrip_ssm':
             # DiagonalStrip-CNN 기반 SSM 요약을 활용한 글로벌 게이트
-            self.ssm_gate = DiagonalStripSSMGate(hidden_dim=hidden_dim, band_width=8, enc_channels=64, dilations=(1,2,4), diag_subtract=0.1, use_video_branch=True)
+            self.ssm_gate = DiagonalStripSSMGate(hidden_dim=hidden_dim, **self.ssm_cfg)
 
     def forward(self, video_feat, audio_feat, video_mask=None, audio_mask=None):
         if self.gating_type == 'global':
@@ -78,9 +83,14 @@ class GatingFunction(nn.Module):
             return gate_mha, gate_ffn
 
 class GatedFusionBlockCustom(nn.Module):
-    def __init__(self, hidden_dim, n_heads, gating_type='global'):
+    def __init__(self, hidden_dim, n_heads, gating_type='global', ssm_band_width=8, ssm_enc_channels=64, ssm_dilations=(1,2,4), ssm_diag_subtract=0.1, ssm_use_video_branch=True):
         super().__init__()
-        self.gating_function = GatingFunction(hidden_dim, gating_type)
+        self.gating_function = GatingFunction(hidden_dim, gating_type,
+                                             ssm_band_width=ssm_band_width,
+                                             ssm_enc_channels=ssm_enc_channels,
+                                             ssm_dilations=ssm_dilations,
+                                             ssm_diag_subtract=ssm_diag_subtract,
+                                             ssm_use_video_branch=ssm_use_video_branch)
         
         self.a_proj = nn.Linear(hidden_dim, hidden_dim)
 
@@ -156,11 +166,17 @@ class GatedFusionBlockCustom(nn.Module):
 
 
 class AVIGATEFusionCustom(nn.Module):
-    def __init__(self, vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1, gating_type='global'):
+    def __init__(self, vid_dim, aud_dim, hidden_dim, n_heads=8, num_layers=1, gating_type='global',
+                 ssm_band_width=8, ssm_enc_channels=64, ssm_dilations=(1,2,4), ssm_diag_subtract=0.1, ssm_use_video_branch=True):
         super().__init__()
 
         self.fusion_layers = nn.ModuleList([
-            GatedFusionBlockCustom(hidden_dim, n_heads, gating_type=gating_type) for _ in range(num_layers)
+            GatedFusionBlockCustom(hidden_dim, n_heads, gating_type=gating_type,
+                                   ssm_band_width=ssm_band_width,
+                                   ssm_enc_channels=ssm_enc_channels,
+                                   ssm_dilations=ssm_dilations,
+                                   ssm_diag_subtract=ssm_diag_subtract,
+                                   ssm_use_video_branch=ssm_use_video_branch) for _ in range(num_layers)
         ])
     
     def forward(self, video_feat, audio_feat, video_mask=None, audio_mask=None):

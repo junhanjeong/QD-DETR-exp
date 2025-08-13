@@ -10,6 +10,11 @@ input_dropout=0.5
 seed=2018
 fusion_layers=4
 fusion_n_heads=8
+# SSM gate hyperparameters
+ssm_band_width=8
+ssm_enc_channels=64
+ssm_dilations=(1 2 4) # space-separated for bash array
+ssm_diag_subtract=0.1
 exp_id=avigate_custom_${gating_type}_${input_dropout}_${seed}_l${fusion_layers}_h${fusion_n_heads}
 
 ######## data paths
@@ -74,4 +79,8 @@ PYTHONPATH=$PYTHONPATH:. python qd_detr/train.py \
 --seed ${seed} \
 --fusion_layers ${fusion_layers} \
 --fusion_n_heads ${fusion_n_heads} \
+--ssm_band_width ${ssm_band_width} \
+--ssm_enc_channels ${ssm_enc_channels} \
+--ssm_dilations ${ssm_dilations[@]} \
+--ssm_diag_subtract ${ssm_diag_subtract} \
 "${@:1}"
