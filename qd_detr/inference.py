@@ -205,8 +205,10 @@ def compute_mr_results(model, eval_loader, opt, epoch_i=None, criterion=None, tb
             # wrap forward to capture outputs
             orig_forward = gf.forward
             def make_wrapper(layer_idx, fn):
-                def wrapper(video_feat, audio_feat):
-                    out = fn(video_feat, audio_feat)
+                # kwargs를 전달하지 않아 발생한 오류를 방지하기 위해
+                # 원래 forward의 서명을 보존하고 *args, **kwargs를 그대로 전달한다.
+                def wrapper(video_feat, audio_feat, *args, **kwargs):
+                    out = fn(video_feat, audio_feat, *args, **kwargs)
                     # out is (gate_mha, gate_ffn)
                     gate_logs_per_layer.append({
                         "layer": layer_idx,
