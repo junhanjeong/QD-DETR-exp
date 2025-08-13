@@ -107,7 +107,7 @@ class BaseOptions(object):
                             help="drop txt_drop_ratio tokens from text input. 0.1=10%")
         parser.add_argument("--use_txt_pos", action="store_true", help="use position_embedding for text as well.")
         parser.add_argument("--use_avigate_custom", action="store_true", help="use AVIGATE custom fusion for video and audio")
-        parser.add_argument("--gating_type", type=str, default="global", choices=["global", "clipwise", "elementwise"], help="gating type for avigate_custom")
+        parser.add_argument("--gating_type", type=str, default="global", choices=["global", "clipwise", "elementwise", "global_diagstrip_ssm"], help="gating type for avigate_custom")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
         parser.add_argument('--num_queries', default=10, type=int,
@@ -248,4 +248,3 @@ class TestOptions(BaseOptions):
                                  help="Number of samples from the beginning to log gate values for. -1: all")
         self.parser.add_argument("--gate_save_path", type=str, default=None,
                                  help="Optional path to save gate logs (jsonl). Default: results_dir/gate_logs_<split>_N<cnt>.jsonl")
-

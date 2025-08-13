@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from .ssm_gate import DiagonalStripSSMGate
 
 class GatingFunction(nn.Module):
     def __init__(self, hidden_dim, gating_type='global'):
@@ -18,6 +19,7 @@ class GatingFunction(nn.Module):
                 nn.ReLU(),
                 nn.Linear(hidden_dim // 2, 1)
             )
+            # MHA gate는 sigmoid, FFN gate는 tanh를 사용할 예정
         elif self.gating_type == 'clipwise':
             self.mlp_mha = nn.Sequential(
                 nn.Linear(hidden_dim * 2, hidden_dim // 2),
@@ -40,8 +42,11 @@ class GatingFunction(nn.Module):
                 nn.ReLU(),
                 nn.Linear(hidden_dim // 2, hidden_dim)
             )
+        elif self.gating_type == 'global_diagstrip_ssm':
+            # DiagonalStrip-CNN 기반 SSM 요약을 활용한 글로벌 게이트
+            self.ssm_gate = DiagonalStripSSMGate(hidden_dim=hidden_dim, band_width=8, enc_channels=64, dilations=(1,2,4), diag_subtract=0.1, use_video_branch=True)
 
-    def forward(self, video_feat, audio_feat):
+    def forward(self, video_feat, audio_feat, video_mask=None, audio_mask=None):
         if self.gating_type == 'global':
             # (batch_size, seq_len, dim) -> (batch_size, dim)
             pooled_video = video_feat.mean(dim=1)
@@ -50,7 +55,7 @@ class GatingFunction(nn.Module):
             # (batch_size, dim * 2)
             joint_representation = torch.cat([pooled_video, pooled_audio], dim=1)
 
-            gate_mha = torch.tanh(self.mlp_mha(joint_representation))
+            gate_mha = torch.sigmoid(self.mlp_mha(joint_representation))
             gate_ffn = torch.tanh(self.mlp_ffn(joint_representation))
             return gate_mha.unsqueeze(-1), gate_ffn.unsqueeze(-1) # (batch_size, 1, 1) to allow broadcasting
 
@@ -67,6 +72,9 @@ class GatingFunction(nn.Module):
             
             gate_mha = torch.tanh(self.mlp_mha(joint_representation)) # (batch_size, seq_len, dim)
             gate_ffn = torch.tanh(self.mlp_ffn(joint_representation)) # (batch_size, seq_len, dim)
+            return gate_mha, gate_ffn
+        elif self.gating_type == 'global_diagstrip_ssm':
+            gate_mha, gate_ffn = self.ssm_gate(video_feat, audio_feat, video_mask=video_mask, audio_mask=audio_mask)
             return gate_mha, gate_ffn
 
 class GatedFusionBlockCustom(nn.Module):
@@ -101,7 +109,7 @@ class GatedFusionBlockCustom(nn.Module):
 
 
     def forward(self, video_feat, audio_feat, video_mask=None, audio_mask=None):
-        gate_mha, gate_ffn = self.gating_function(video_feat, audio_feat)
+        gate_mha, gate_ffn = self.gating_function(video_feat, audio_feat, video_mask=video_mask, audio_mask=audio_mask)
         
         bs, seq_len, hidden_dim = video_feat.shape
         

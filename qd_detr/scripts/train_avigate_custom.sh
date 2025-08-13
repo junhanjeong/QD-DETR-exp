@@ -4,7 +4,8 @@ v_feat_types=slowfast_clip
 t_feat_type=clip
 a_feat_type=pann
 results_root=results
-gating_type=global # 'global' or 'clipwise' or 'elementwise'
+# 게이트 타입: global / clipwise / elementwise / global_diagstrip_ssm
+gating_type=global_diagstrip_ssm
 input_dropout=0.5
 seed=2018
 fusion_layers=4
@@ -17,7 +18,7 @@ eval_path=data/highlight_val_release.jsonl
 eval_split_name=val
 
 ######## setup video+text features
-feat_root=../features
+feat_root=/raid/mailab/features
 
 # video features
 v_feat_dim=0
