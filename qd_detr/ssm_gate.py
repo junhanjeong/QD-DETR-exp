@@ -121,7 +121,7 @@ class DiagonalStripSSMGate(nn.Module):
         self.encoder = DiagonalStripEncoder(in_bands=in_bands, hidden=enc_channels, dilations=dilations)
         self.use_video_branch = use_video_branch
 
-        feat_in = enc_channels * (2 if use_video_branch else 1) + (enc_channels if use_video_branch else 0)
+        feat_in = enc_channels * (2 if use_video_branch else 1)
         self.norm = nn.LayerNorm(feat_in)
         self.mlp_mha = nn.Sequential(
             nn.Linear(feat_in, enc_channels),
@@ -152,7 +152,7 @@ class DiagonalStripSSMGate(nn.Module):
             S_v = compute_ssm(video_feat, video_mask, diag_subtract=self.diag_subtract)
             strip_v = extract_diagonal_strip(S_v, self.band_width)
             z_v = self.encoder(strip_v, time_mask=video_mask)
-            f = torch.cat([z_a, z_v, z_a - z_v], dim=-1)
+            f = torch.cat([z_a, z_v], dim=-1)
         else:
             f = z_a
 
